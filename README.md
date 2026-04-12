@@ -1,89 +1,118 @@
 # Hermes 飞书插件
 
-把官方 `@larksuite/openclaw-lark` 的飞书交互默认体验适配到 Hermes。
+把官方 `@larksuite/openclaw-lark` 的飞书交互体验，按 **Hermes 官方支持的插件形态** 适配到 Hermes。
 
-当前目标：
+## 目标
 
-- 使用 `Typing` 反应表示“正在处理”
-- 不再使用 Hermes 原生的 `OK` 回执反应
-- 主动清理历史残留或异常出现的 `OK` 回执
-- 使用单条 `reply_to` 交互卡片承载整次流式输出与最终答案
-- 当工具先执行、答案后出来时，优先复用同一张卡片，不再额外冒出工具灰消息
-- 交互卡片更新对齐 OpenClaw：使用 `im.message.patch` 而不是 `im.message.update`
-- Feishu 流式阶段忽略 Hermes 原生的“工具边界后新开消息”逻辑，尽量保持全程单条回复更新
-- 屏蔽 Feishu 聊天中的内部状态灰消息：重试、fallback、context compaction、原始 tool progress
-- 子代理/委托任务的工具活动会实时透传到同一张卡片，并高亮当前阶段
-- 卡片内容形态更接近 OpenClaw：`工具执行中 / 思考中 / 最终答案 / 完成 footer`
-- 卡片 JSON 进一步对齐官方：改为 `CardKit 2.0` 风格的 `schema + body.elements`
-- 回复模式对齐官方默认语义：`auto` 下私聊走流式卡片、群聊走静态回复
-- 仓库按“可公开开源”标准整理，不包含 Bot 密钥、OpenID、本地账号路径等隐私信息
+- 对齐 OpenClaw 官方插件的飞书默认交互语义
+- 保持 Hermes 官方推荐的 **Python 目录插件** 形态
+- 同时提供 Hermes 官方支持的 **pip entry point** 分发能力
+- 不修改 Hermes 核心源码，只通过插件与运行时补丁完成接入
 
-## 设计说明
+## 为什么不是直接搬 OpenClaw 的 Node 插件
 
-Hermes 目前只能加载 Python 目录插件，不能直接加载 OpenClaw 的 Node 插件。
-因此本仓库采用“**行为适配 + 官方交互语义对齐**”方案：
+OpenClaw 官方飞书插件本身是 Node 技术栈，但 Hermes 当前官方推荐与稳定支持的加载方式是：
 
-- 参考官方 `openclaw-lark` 的默认配置与交互语义
-- 用 Hermes 官方插件系统进行运行时补丁
-- 不直接修改 Hermes 核心源码
+- `plugin.yaml` + `__init__.py` 的目录插件
+- `hermes_agent.plugins` entry point 的 Python 包分发
 
-当前仍然是 **Hermes 侧 Python 适配实现**，不是把官方 Node 插件原样搬过来。
-因此目标是“使用体验尽量贴近官方默认效果”，而不是声称已经 100% 字节级对齐。
+因此本仓库采用的是：
 
-## 隐私与开源
+- **交互语义对齐**
+- **仓库结构对齐**
+- **Hermes 官方插件生态对齐**
 
-本仓库默认按公开仓库标准维护：
+而不是强行把 Node 插件塞进 Hermes 的非官方加载链路。
 
-- 不提交任何 `app_id`、`app_secret`、`open_id`、API Key
-- 不提交 `.env`、日志、缓存、`__pycache__`
-- 不写死个人用户名、本地磁盘路径、Bot 绑定关系
+## 当前对齐的核心行为
 
-如果未来确实需要保存真实配置，仓库必须改为私有仓库。
+- 使用飞书 `Typing` 反应表示“正在处理”
+- 关闭并清理 Hermes 默认的 `OK` 回执反应
+- 使用单条 `reply_to` 卡片承载流式过程与最终答案
+- 工具执行过程尽量折叠进同一张卡片
+- 优先走 `CardKit 2.0` 形态与 `im.message.patch` 更新路径
+- 抑制上下文压缩、fallback、原始工具状态等噪音消息
+- 委托/子代理过程继续汇总到同一条飞书回复
+- 回复模式对齐 OpenClaw 默认语义：`auto` 下私聊流式、群聊静态
+- 本地化按钮、审批文案与系统提示
 
-## 对齐的官方行为
+## 仓库结构
 
-参考官方包 `@larksuite/openclaw-lark`：
+```text
+hermes-feishu-plugin/
+├─ plugin.yaml
+├─ __init__.py
+├─ install.py
+├─ pyproject.toml
+├─ src/hermes_feishu_plugin/
+│  ├─ plugin.py
+│  ├─ core/
+│  ├─ channel/
+│  ├─ card/
+│  └─ tools/
+└─ tests/
+```
 
-- `Typing` 反应作为处理中提示
-- 单条交互卡片承载流式输出
-- 回复原始用户消息而不是悬空发送
-- 清除 Hermes 内置 `OK` 回执路径
-- 在工具执行阶段尽量把进度折叠进同一张卡片
-- `auto` 模式下私聊优先流式、群聊优先静态
+结构含义：
 
-## 当前配置
+- 根目录保留 Hermes 目录插件入口
+- `src/hermes_feishu_plugin/` 承载真实实现
+- `pyproject.toml` 提供 `hermes_agent.plugins` entry point
+- `tests/` 提供可重复的本地验收
+
+## 安装方式
+
+### 方式一：目录插件
+
+在仓库根目录执行：
+
+```bash
+python3 install.py
+```
+
+它会把插件软链接到：
+
+- `~/.hermes/plugins/hermes_feishu_plugin`
+- `~/.hermes/profiles/*/plugins/hermes_feishu_plugin`
+
+### 方式二：pip entry point
+
+在 Hermes 运行环境中安装：
+
+```bash
+pip install -e .
+```
+
+适用于后续包分发、虚拟环境安装与自动化部署。
+
+## 配置
 
 可选环境变量：
 
 - `HERMES_FEISHU_REPLY_MODE=auto|streaming|static`
 - `HERMES_FEISHU_LOCALE=auto|zh_cn|en_us`
 
-默认值为 `auto`：
+默认值：
 
 - 私聊：`streaming`
 - 群聊：`static`
-- 语言：优先跟随系统环境；也可以显式强制中文或英文
+- 语言：优先跟随系统与运行环境自动判断
 
-## 安装位置
-
-开发仓库：
-
-- 任意本地开发目录，例如 `hermes-feishu-plugin`
-
-Hermes 插件加载位置：
-
-- `~/.hermes/plugins/hermes_feishu_plugin`
-- `~/.hermes/profiles/*/plugins/hermes_feishu_plugin`
-
-## 安装
-
-在插件仓库目录执行：
+## 开发与测试
 
 ```bash
-python3 install.py
+pytest
 ```
 
-它会把插件链接到 root 和各 profile 的 Hermes 插件目录。
+## 隐私与开源
+
+仓库按公开开源标准维护：
+
+- 不提交 `app_id`、`app_secret`、`open_id`、API Key
+- 不提交 `.env`、日志、缓存、`__pycache__`
+- 不写死个人用户名、本地磁盘路径、Bot 绑定关系
+
+若未来必须保存真实配置，仓库应改为私有仓库。
 
 ## 许可证
 
