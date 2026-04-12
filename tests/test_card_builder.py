@@ -8,7 +8,9 @@ from hermes_feishu_plugin.card.builder import (
     build_streaming_pre_answer_card,
     split_reasoning_text,
 )
+from hermes_feishu_plugin.card.streaming import _should_show_tool_use
 from hermes_feishu_plugin.card.models import ToolDisplayStep
+from hermes_feishu_plugin.channel.runtime_state import remember_tool_steps
 
 
 def test_split_reasoning_text_extracts_xml_reasoning_and_answer() -> None:
@@ -69,3 +71,17 @@ def test_card_builder_uses_preferred_locale_for_visible_labels(monkeypatch) -> N
 
     assert tool_panel_header["content"].startswith("🛠️ 工具执行")
     assert "已完成" in footer["content"]
+
+
+def test_show_tool_use_only_after_real_tool_steps() -> None:
+    """Runtime should hide the tool panel until a tool step actually exists."""
+    class DummyAdapter:
+        """Minimal adapter stub."""
+
+    adapter = DummyAdapter()
+
+    assert _should_show_tool_use(adapter, "chat-1") is False
+
+    remember_tool_steps(adapter, "chat-1", ["🔎 find *.py"])
+
+    assert _should_show_tool_use(adapter, "chat-1") is True

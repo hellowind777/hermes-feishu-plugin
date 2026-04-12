@@ -39,6 +39,14 @@ def _assert_cardkit_ok(response: Any, *, api: str, context: str) -> None:
     )
 
 
+def _card_json_payload(card: dict[str, Any]) -> dict[str, str]:
+    """Wrap card JSON using the CardKit ``card_json`` payload shape."""
+    return {
+        "type": "card_json",
+        "data": json.dumps(card, ensure_ascii=False),
+    }
+
+
 async def create_card_entity(adapter: Any, card: dict[str, Any]) -> str:
     """Create a CardKit card entity and return its ``card_id``."""
     from lark_oapi.api.cardkit.v1 import CreateCardRequest, CreateCardRequestBody
@@ -98,7 +106,7 @@ async def update_card(
 
     body = (
         UpdateCardRequestBody.builder()
-        .card(json.dumps(card, ensure_ascii=False))
+        .card(_card_json_payload(card))
         .sequence(sequence)
         .build()
     )

@@ -84,6 +84,11 @@ def _visible_tool_steps(adapter: Any, chat_id: str) -> list[Any]:
     return fallback_steps_from_lines(get_fallback_tool_lines(adapter, chat_id))
 
 
+def _should_show_tool_use(adapter: Any, chat_id: str) -> bool:
+    """Only render the tool panel after real tool activity exists."""
+    return bool(_visible_tool_steps(adapter, chat_id))
+
+
 def _elapsed_ms(adapter: Any, chat_id: str) -> int | None:
     seconds = get_elapsed_seconds(adapter, chat_id)
     if seconds is None:
@@ -118,6 +123,7 @@ async def _ensure_card_created(
             tool_steps=steps,
             tool_elapsed_ms=tool_elapsed_ms,
             status_text=status_text,
+            show_tool_use=_should_show_tool_use(adapter, chat_id),
         )
 
         try:
@@ -147,7 +153,11 @@ async def _ensure_card_created(
                 state.original_card_id = ""
                 state.card_sequence = 0
 
-        fallback_card = build_streaming_patch_card(tool_steps=steps, status_text=status_text)
+        fallback_card = build_streaming_patch_card(
+            tool_steps=steps,
+            status_text=status_text,
+            show_tool_use=_should_show_tool_use(adapter, chat_id),
+        )
         response = await send_interactive_card(
             adapter,
             chat_id=chat_id,
@@ -213,6 +223,7 @@ async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
         text=text,
         tool_steps=_visible_tool_steps(adapter, chat_id),
         status_text=get_pending_status_text(adapter, chat_id),
+        show_tool_use=_should_show_tool_use(adapter, chat_id),
     )
     response = await patch_interactive_card(adapter, message_id=message_id, card=card)
     if _response_ok(response):
@@ -253,6 +264,7 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
         tool_steps=steps,
         tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
         status_text=status_text,
+        show_tool_use=_should_show_tool_use(adapter, chat_id),
     )
     active_card_id = get_card_id(adapter, chat_id)
     if active_card_id:
@@ -291,6 +303,7 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str) -> bool:
         tool_steps=_visible_tool_steps(adapter, chat_id),
         tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
         elapsed_ms=_elapsed_ms(adapter, chat_id),
+        show_tool_use=_should_show_tool_use(adapter, chat_id),
     )
     effective_card_id = get_card_id(adapter, chat_id) or get_original_card_id(adapter, chat_id)
     if effective_card_id:

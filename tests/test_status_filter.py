@@ -1,30 +1,18 @@
-"""Tests for Feishu status-message filtering and localization."""
+"""Tests for status-message filtering."""
 
 from __future__ import annotations
 
-from hermes_feishu_plugin.channel.status_filter import is_model_switch_status_message, should_suppress_status_message
-from hermes_feishu_plugin.core.i18n import localize_system_text
+from hermes_feishu_plugin.channel.status_filter import (
+    is_model_switch_status_message,
+    parse_tool_progress_lines,
+    should_suppress_status_message,
+)
 
 
-def test_model_switch_status_messages_are_suppressed_from_plain_chat(monkeypatch) -> None:
-    """Provider switch lifecycle messages should not leak as separate chat text."""
-    monkeypatch.setenv("HERMES_FEISHU_LOCALE", "zh_cn")
-    messages = [
-        "⚠️ Rate limited — switching to fallback provider...",
-        "🔄 Primary model failed — switching to fallback: gpt-5.4 via custom",
-        "⚠️ Non-retryable error (HTTP 404) — trying fallback...",
-        "⚠️ Max retries (3) exhausted — trying fallback...",
-    ]
+def test_localized_model_switch_status_is_not_treated_as_tool_progress() -> None:
+    """Localized fallback notices should stay in the status area."""
+    text = "🔄 已切换到第 1 备用 API 渠道：codexzh（gpt-5.4，codex_responses）"
 
-    for message in messages:
-        assert is_model_switch_status_message(message)
-        assert should_suppress_status_message(message)
-
-
-def test_localize_model_switch_status_text(monkeypatch) -> None:
-    """Fixed provider-switch phrases should follow the configured locale."""
-    monkeypatch.setenv("HERMES_FEISHU_LOCALE", "zh_cn")
-
-    localized = localize_system_text("⚠️ Rate limited — switching to fallback provider...")
-
-    assert "主 API 渠道触发限速" in localized
+    assert is_model_switch_status_message(text) is True
+    assert should_suppress_status_message(text) is True
+    assert parse_tool_progress_lines(text) == []

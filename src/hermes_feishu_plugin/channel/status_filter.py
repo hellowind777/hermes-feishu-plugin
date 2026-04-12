@@ -12,6 +12,11 @@ _EMPTY_FALLBACK_RE = re.compile(r"^(⚠️|⚠)?\s*Empty/malformed response\s+�
 _NON_RETRYABLE_FALLBACK_RE = re.compile(r"^(⚠️|⚠)?\s*Non-retryable error.*trying fallback", re.I)
 _MAX_RETRIES_RE = re.compile(r"^(⚠️|⚠)\s+Max retries \(\d+\) exhausted\s+—\s+trying fallback")
 _INVALID_RETRIES_RE = re.compile(r"^(⚠️|⚠)\s+Max retries \(\d+\) for invalid responses\s+—\s+trying fallback")
+_ZH_SWITCHED_RE = re.compile(r"^(↪️|↪|🔄)?\s*已切换到(?:第\s*\d+\s*)?备用 API 渠道", re.I)
+_ZH_PRIMARY_FAILED_RE = re.compile(r"^(↪️|↪|🔄)?\s*主模型失败[，,:：].*备用 API 渠道", re.I)
+_ZH_RATE_LIMIT_RE = re.compile(r"^(⚠️|⚠)?\s*主 API 渠道触发限速.*备用 API 渠道", re.I)
+_ZH_EMPTY_RE = re.compile(r"^(⚠️|⚠)?\s*主 API 渠道响应异常.*备用 API 渠道", re.I)
+_ZH_NON_RETRYABLE_RE = re.compile(r"^(⚠️|⚠)?\s*主 API 渠道请求失败.*备用 API 渠道", re.I)
 _TOOL_PROGRESS_LINE_RE = re.compile(r"^[^\w\s]{1,4}\s+[A-Za-z0-9_.-]+(?:\([^)]*\))?(?::.*|\.\.\.)?$")
 
 
@@ -91,6 +96,11 @@ def is_model_switch_status_message(text: str) -> bool:
             _NON_RETRYABLE_FALLBACK_RE,
             _MAX_RETRIES_RE,
             _INVALID_RETRIES_RE,
+            _ZH_SWITCHED_RE,
+            _ZH_PRIMARY_FAILED_RE,
+            _ZH_RATE_LIMIT_RE,
+            _ZH_EMPTY_RE,
+            _ZH_NON_RETRYABLE_RE,
         )
     )
 
