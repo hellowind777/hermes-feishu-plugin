@@ -60,7 +60,6 @@ def get_preferred_locale() -> str:
         os.getenv("LANG"),
         _detect_windows_locale(),
         locale.getlocale()[0],
-        locale.getdefaultlocale()[0] if hasattr(locale, "getdefaultlocale") else None,
     ):
         value = str(candidate or "").strip().lower()
         if value.startswith("zh"):
