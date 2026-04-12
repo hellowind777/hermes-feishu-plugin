@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 
 PLUGIN_LINK_NAME = "hermes_feishu_plugin"
 LEGACY_LINK_NAMES = ("hermes-feishu-plugin",)
+LEGACY_PLUGIN_DIR_NAMES = ("runtime_patches",)
 
 
 def _resolve_plugin_root() -> Path:
@@ -33,6 +35,17 @@ def _remove_legacy_links(plugins_dir: Path, plugin_dir: Path, plugin_name: str) 
             legacy_path.unlink()
 
 
+def _remove_legacy_plugin_dirs(plugins_dir: Path) -> None:
+    """Remove superseded local plugin directories from the plugin root."""
+    for legacy_name in LEGACY_PLUGIN_DIR_NAMES:
+        legacy_path = plugins_dir / legacy_name
+        if legacy_path.is_symlink():
+            legacy_path.unlink()
+            continue
+        if legacy_path.is_dir():
+            shutil.rmtree(legacy_path)
+
+
 def sync_profile_plugin_links(*, plugin_name: str = PLUGIN_LINK_NAME) -> list[str]:
     """Ensure the plugin is linked into root and profile plugin directories."""
     plugin_dir = _resolve_plugin_root()
@@ -42,6 +55,7 @@ def sync_profile_plugin_links(*, plugin_name: str = PLUGIN_LINK_NAME) -> list[st
     for scope, plugins_dir in _iter_plugin_dirs(root):
         plugins_dir.mkdir(parents=True, exist_ok=True)
         _remove_legacy_links(plugins_dir, plugin_dir, plugin_name)
+        _remove_legacy_plugin_dirs(plugins_dir)
 
         link_path = plugins_dir / plugin_name
         if link_path.is_symlink():

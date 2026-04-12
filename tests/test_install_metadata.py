@@ -22,6 +22,9 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
 
     legacy_link = root_plugins / "hermes-feishu-plugin"
     legacy_link.symlink_to(repo_root, target_is_directory=True)
+    legacy_runtime_plugin = default_plugins / "runtime_patches"
+    legacy_runtime_plugin.mkdir()
+    (legacy_runtime_plugin / "plugin.yaml").write_text("name: runtime_patches\n", encoding="utf-8")
 
     monkeypatch.setattr(install_module, "_resolve_plugin_root", lambda: repo_root)
     monkeypatch.setattr(install_module.Path, "home", lambda: home_root)
@@ -36,6 +39,7 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
     assert root_link.resolve() == repo_root
     assert default_link.resolve() == repo_root
     assert not legacy_link.exists()
+    assert not legacy_runtime_plugin.exists()
 
 
 def test_project_metadata_declares_directory_plugin_and_entrypoint_support() -> None:

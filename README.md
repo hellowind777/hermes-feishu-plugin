@@ -75,6 +75,11 @@ python3 install.py
 - `~/.hermes/plugins/hermes_feishu_plugin`
 - `~/.hermes/profiles/*/plugins/hermes_feishu_plugin`
 
+同时会自动清理旧版遗留的：
+
+- `hermes-feishu-plugin` 旧命名软链
+- `runtime_patches` 旧插件目录/软链
+
 ### 方式二：pip entry point
 
 在 Hermes 运行环境中安装：
