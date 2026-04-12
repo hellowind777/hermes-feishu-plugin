@@ -39,6 +39,7 @@ class ChatRuntimeState:
     tool_call_indices: dict[str, list[int]] = field(default_factory=dict)
     fallback_switch_count: int = 0
     card_create_lock: Any = None
+    card_update_lock: Any = None
     flush_controller: Any = None
     heartbeat_task: Any = None
 

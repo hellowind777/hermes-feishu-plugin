@@ -128,7 +128,7 @@ def build_streaming_patch_card(
     steps = list(tool_steps or [])
 
     if show_tool_use:
-        elements.append(build_tool_use_panel(steps, expanded=bool(steps)) if steps else build_streaming_tool_use_pending_panel())
+        elements.append(build_tool_use_panel(steps, expanded=False) if steps else build_streaming_tool_use_pending_panel())
 
     if reasoning and not answer:
         elements.append(

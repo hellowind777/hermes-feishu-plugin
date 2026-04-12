@@ -60,7 +60,7 @@ def build_streaming_tool_use_active_panel(
 
     return {
         "tag": "collapsible_panel",
-        "expanded": True,
+        "expanded": False,
         "header": _collapsible_header(
             zh=f"🛠️ {' · '.join(zh_parts)}",
             en=f"🛠️ {' · '.join(en_parts)}",

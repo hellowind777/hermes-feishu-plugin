@@ -5,6 +5,7 @@ from __future__ import annotations
 from hermes_feishu_plugin.card.builder import (
     STREAMING_ELEMENT_ID,
     build_complete_card,
+    build_streaming_patch_card,
     build_streaming_pre_answer_card,
     split_reasoning_text,
 )
@@ -49,6 +50,17 @@ def test_build_streaming_pre_answer_card_can_render_status_text() -> None:
     content_element = next(element for element in card["body"]["elements"] if element.get("element_id") == STREAMING_ELEMENT_ID)
 
     assert content_element["content"] == "已切换到第 1 备用 API 渠道：codexzh"
+
+
+def test_streaming_tool_panels_default_to_collapsed() -> None:
+    """Live tool panels should stay collapsed unless the user opens them."""
+    steps = [ToolDisplayStep(title="Run command", status="running")]
+
+    pre_answer = build_streaming_pre_answer_card(tool_steps=steps, show_tool_use=True)
+    assert pre_answer["body"]["elements"][0]["expanded"] is False
+
+    patch_card = build_streaming_patch_card(tool_steps=steps, show_tool_use=True)
+    assert patch_card["elements"][0]["expanded"] is False
 
 
 def test_card_builder_uses_preferred_locale_for_visible_labels(monkeypatch) -> None:
