@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from ..card.streaming import sync_progress_card
 from .common import clear_ack_reactions_later, ensure_runtime_state
 from .reactions import add_typing_reaction, clear_ack_reactions, remove_typing_reaction
 from .runtime_state import remember_inbound_message, remember_reply_target
@@ -53,6 +54,7 @@ def patch_typing_reaction() -> bool:
                 typing_reactions.pop(chat_id, None)
 
             await clear_ack_reactions(self, message_id)
+            await sync_progress_card(self, chat_id, metadata=metadata)
             reaction_id = await add_typing_reaction(self, message_id)
             if reaction_id:
                 typing_reactions[chat_id] = (message_id, reaction_id)

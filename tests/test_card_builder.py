@@ -40,6 +40,15 @@ def test_build_streaming_pre_answer_card_uses_cardkit_streaming_shape() -> None:
     assert any(element.get("element_id") == "loading_icon" for element in elements)
 
 
+def test_build_streaming_pre_answer_card_can_render_status_text() -> None:
+    """Pre-answer cards should show provider-switch status in the content area."""
+    card = build_streaming_pre_answer_card(status_text="已切换到第 1 备用 API 渠道：codexzh")
+
+    content_element = next(element for element in card["body"]["elements"] if element.get("element_id") == STREAMING_ELEMENT_ID)
+
+    assert content_element["content"] == "已切换到第 1 备用 API 渠道：codexzh"
+
+
 def test_card_builder_uses_preferred_locale_for_visible_labels(monkeypatch) -> None:
     """Visible card labels should follow the detected system locale."""
     monkeypatch.setenv("HERMES_FEISHU_LOCALE", "zh_cn")

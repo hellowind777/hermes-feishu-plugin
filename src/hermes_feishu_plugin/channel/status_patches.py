@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..card.streaming import sync_progress_card
+from ..card.streaming import _finalize_card as finalize_progress_card, sync_progress_card
 from ..core.i18n import localize_system_text
 from ..core.mode import should_stream
 from .common import (
@@ -13,7 +13,11 @@ from .common import (
     replace_edit_content,
     replace_send_content,
 )
-from .runtime_state import get_chat_state, remember_tool_steps
+from .runtime_state import (
+    get_chat_state,
+    remember_pending_status_text,
+    remember_tool_steps,
+)
 from .status_filter import (
     is_model_switch_status_message,
     parse_tool_progress_lines,
@@ -79,6 +83,13 @@ def _build_send_wrapper(original_send):
         if handled is not None:
             return handled
         localized = localize_system_text(content)
+        finalized = await maybe_handle_final_response(
+            self,
+            chat_id=chat_id,
+            content=localized,
+        )
+        if finalized is not None:
+            return finalized
         args, kwargs = replace_send_content(args, kwargs, localized)
         return await original_send(self, *args, **kwargs)
 
@@ -119,7 +130,7 @@ async def maybe_handle_status_message(
     from gateway.platforms.base import SendResult
 
     if chat_id and is_model_switch_status_message(content):
-        remember_tool_steps(adapter, chat_id, [_model_switch_display_line(adapter, chat_id, content)])
+        remember_pending_status_text(adapter, chat_id, _model_switch_display_line(adapter, chat_id, content))
         if should_stream(adapter, chat_id):
             patched_id = await sync_progress_card(adapter, chat_id, metadata=metadata)
             return SendResult(success=True, message_id=patched_id or message_id)
@@ -135,6 +146,32 @@ async def maybe_handle_status_message(
 
     if should_suppress_status_message(content):
         return SendResult(success=True, message_id=message_id)
+    return None
+
+
+async def maybe_handle_final_response(
+    adapter: Any,
+    *,
+    chat_id: str,
+    content: str,
+) -> Any | None:
+    """Fold a non-streaming final reply back into the existing live card."""
+    from gateway.platforms.base import SendResult
+
+    cleaned = str(content or "").strip()
+    if not chat_id or not cleaned or should_suppress_status_message(cleaned):
+        return None
+    if parse_tool_progress_lines(cleaned):
+        return None
+    if not should_stream(adapter, chat_id):
+        return None
+
+    state = get_chat_state(adapter, chat_id)
+    if not state.card_message_id or state.phase in {"completed", "aborted", "terminated"}:
+        return None
+
+    if await finalize_progress_card(adapter, chat_id, cleaned):
+        return SendResult(success=True, message_id=state.card_message_id)
     return None
 
 

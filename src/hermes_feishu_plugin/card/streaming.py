@@ -10,13 +10,12 @@ from ..channel.runtime_state import (
     advance_card_sequence,
     disable_cardkit_streaming,
     get_card_id,
-    get_card_message_id,
     get_chat_state,
-    get_display_text,
     get_elapsed_seconds,
     get_fallback_tool_lines,
     get_last_flushed_text,
     get_original_card_id,
+    get_pending_status_text,
     get_reply_target,
     get_tool_elapsed_ms,
     get_tool_steps,
@@ -105,63 +104,71 @@ async def _ensure_card_created(
         return state.card_message_id
     if not reply_to:
         return None
+    if state.card_create_lock is None:
+        state.card_create_lock = asyncio.Lock()
 
-    steps = _visible_tool_steps(adapter, chat_id)
-    tool_elapsed_ms = get_tool_elapsed_ms(adapter, chat_id)
-    initial_card = build_streaming_pre_answer_card(
-        tool_steps=steps,
-        tool_elapsed_ms=tool_elapsed_ms,
-    )
+    async with state.card_create_lock:
+        if state.card_message_id:
+            return state.card_message_id
 
-    try:
-        card_id = await create_card_entity(adapter, initial_card)
-        remember_card_entity(adapter, chat_id, card_id)
-        response = await send_card_reference(
+        steps = _visible_tool_steps(adapter, chat_id)
+        tool_elapsed_ms = get_tool_elapsed_ms(adapter, chat_id)
+        status_text = get_pending_status_text(adapter, chat_id)
+        initial_card = build_streaming_pre_answer_card(
+            tool_steps=steps,
+            tool_elapsed_ms=tool_elapsed_ms,
+            status_text=status_text,
+        )
+
+        try:
+            card_id = await create_card_entity(adapter, initial_card)
+            remember_card_entity(adapter, chat_id, card_id)
+            response = await send_card_reference(
+                adapter,
+                chat_id=chat_id,
+                card_id=card_id,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if not _response_ok(response):
+                raise RuntimeError(f"send CardKit reference failed: code={getattr(response, 'code', None)} msg={getattr(response, 'msg', None)}")
+            message_id = extract_message_id(response)
+            if not message_id:
+                raise RuntimeError("send CardKit reference succeeded but no message_id was returned")
+            remember_card_message(adapter, chat_id, message_id)
+            state.phase = "streaming"
+            state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
+            state.flush_controller.set_ready(True)
+            return message_id
+        except Exception as exc:
+            logger.warning("hermes_feishu_plugin CardKit flow failed; falling back to IM card: %s", exc)
+            disable_cardkit_streaming(adapter, chat_id)
+            if not state.card_message_id:
+                state.original_card_id = ""
+                state.card_sequence = 0
+
+        fallback_card = build_streaming_patch_card(tool_steps=steps, status_text=status_text)
+        response = await send_interactive_card(
             adapter,
             chat_id=chat_id,
-            card_id=card_id,
+            card=fallback_card,
             reply_to=reply_to,
             metadata=metadata,
         )
         if not _response_ok(response):
-            raise RuntimeError(f"send CardKit reference failed: code={getattr(response, 'code', None)} msg={getattr(response, 'msg', None)}")
+            logger.warning(
+                "hermes_feishu_plugin fallback IM card send failed: code=%s msg=%s",
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+            return None
         message_id = extract_message_id(response)
-        if not message_id:
-            raise RuntimeError("send CardKit reference succeeded but no message_id was returned")
-        remember_card_message(adapter, chat_id, message_id)
-        state.phase = "streaming"
-        state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
-        state.flush_controller.set_ready(True)
+        if message_id:
+            remember_card_message(adapter, chat_id, message_id)
+            state.phase = "streaming"
+            state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
+            state.flush_controller.set_ready(True)
         return message_id
-    except Exception as exc:
-        logger.warning("hermes_feishu_plugin CardKit flow failed; falling back to IM card: %s", exc)
-        disable_cardkit_streaming(adapter, chat_id)
-        if not state.card_message_id:
-            state.original_card_id = ""
-            state.card_sequence = 0
-
-    fallback_card = build_streaming_patch_card(tool_steps=steps)
-    response = await send_interactive_card(
-        adapter,
-        chat_id=chat_id,
-        card=fallback_card,
-        reply_to=reply_to,
-        metadata=metadata,
-    )
-    if not _response_ok(response):
-        logger.warning(
-            "hermes_feishu_plugin fallback IM card send failed: code=%s msg=%s",
-            getattr(response, "code", None),
-            getattr(response, "msg", None),
-        )
-        return None
-    message_id = extract_message_id(response)
-    if message_id:
-        remember_card_message(adapter, chat_id, message_id)
-        state.phase = "streaming"
-        state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
-        state.flush_controller.set_ready(True)
-    return message_id
 
 
 async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
@@ -202,7 +209,11 @@ async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
     if get_original_card_id(adapter, chat_id):
         return
 
-    card = build_streaming_patch_card(text=text, tool_steps=_visible_tool_steps(adapter, chat_id))
+    card = build_streaming_patch_card(
+        text=text,
+        tool_steps=_visible_tool_steps(adapter, chat_id),
+        status_text=get_pending_status_text(adapter, chat_id),
+    )
     response = await patch_interactive_card(adapter, message_id=message_id, card=card)
     if _response_ok(response):
         remember_last_flushed_text(adapter, chat_id, text)
@@ -229,7 +240,8 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
         return None
 
     steps = _visible_tool_steps(adapter, chat_id)
-    if not steps:
+    status_text = get_pending_status_text(adapter, chat_id)
+    if not steps and not status_text:
         return message_id
 
     now = asyncio.get_running_loop().time()
@@ -240,6 +252,7 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
     card = build_streaming_pre_answer_card(
         tool_steps=steps,
         tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
+        status_text=status_text,
     )
     active_card_id = get_card_id(adapter, chat_id)
     if active_card_id:

@@ -30,6 +30,7 @@ class ChatRuntimeState:
     last_card_update_at: float = 0.0
     last_tool_status_update_at: float = 0.0
     display_text: str = ""
+    pending_status_text: str = ""
     last_flushed_text: str = ""
     tool_started_at: float = 0.0
     tool_elapsed_ms: int = 0
@@ -37,6 +38,7 @@ class ChatRuntimeState:
     fallback_tool_lines: list[str] = field(default_factory=list)
     tool_call_indices: dict[str, list[int]] = field(default_factory=dict)
     fallback_switch_count: int = 0
+    card_create_lock: Any = None
     flush_controller: Any = None
     heartbeat_task: Any = None
 
@@ -181,12 +183,25 @@ def get_last_card_update_at(adapter: Any, chat_id: str) -> float:
 
 def remember_display_text(adapter: Any, chat_id: str, text: str) -> None:
     """Persist the latest visible streamed text."""
-    get_chat_state(adapter, chat_id).display_text = str(text or "")
+    state = get_chat_state(adapter, chat_id)
+    state.display_text = str(text or "")
+    if state.display_text.strip():
+        state.pending_status_text = ""
 
 
 def get_display_text(adapter: Any, chat_id: str) -> str:
     """Return the latest visible streamed text."""
     return get_chat_state(adapter, chat_id).display_text
+
+
+def remember_pending_status_text(adapter: Any, chat_id: str, text: str) -> None:
+    """Persist the latest pre-answer status text shown in the live card."""
+    get_chat_state(adapter, chat_id).pending_status_text = str(text or "").strip()
+
+
+def get_pending_status_text(adapter: Any, chat_id: str) -> str:
+    """Return the latest pre-answer status text."""
+    return get_chat_state(adapter, chat_id).pending_status_text.strip()
 
 
 def remember_last_flushed_text(adapter: Any, chat_id: str, text: str) -> None:

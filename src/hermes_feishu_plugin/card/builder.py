@@ -64,6 +64,7 @@ def build_streaming_pre_answer_card(
     *,
     tool_steps: list[ToolDisplayStep] | None = None,
     tool_elapsed_ms: int | None = None,
+    status_text: str = "",
     show_tool_use: bool = True,
 ) -> dict[str, Any]:
     """Build the official-style CardKit 2.0 pre-answer streaming card."""
@@ -80,7 +81,7 @@ def build_streaming_pre_answer_card(
     elements.append(
         {
             "tag": "markdown",
-            "content": "",
+            "content": _optimize_markdown_style(status_text),
             "text_align": "left",
             "text_size": "normal_v2",
             "margin": "0px 0px 0px 0px",
@@ -118,6 +119,7 @@ def build_streaming_patch_card(
     *,
     text: str = "",
     tool_steps: list[ToolDisplayStep] | None = None,
+    status_text: str = "",
     show_tool_use: bool = True,
 ) -> dict[str, Any]:
     """Build the IM patch fallback streaming card."""
@@ -142,6 +144,8 @@ def build_streaming_patch_card(
         )
     elif answer:
         elements.append({"tag": "markdown", "content": _optimize_markdown_style(answer)})
+    elif status_text.strip():
+        elements.append({"tag": "markdown", "content": _optimize_markdown_style(status_text)})
 
     return {
         "config": {
