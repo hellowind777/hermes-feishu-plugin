@@ -1,37 +1,26 @@
-"""Hermes Feishu plugin entrypoint."""
+"""Directory-plugin shim for Hermes.
+
+This root module keeps Hermes's recommended ``plugin.yaml`` + ``__init__.py``
+directory layout while delegating the real implementation to ``src/`` so the
+plugin can also be packaged via ``hermes_agent.plugins`` entry points.
+"""
 
 from __future__ import annotations
 
-import logging
-
-from .install import sync_profile_plugin_links
-from .patches import apply_runtime_patches
-from .tool_hooks import on_post_tool_call, on_pre_tool_call
-
-logger = logging.getLogger(__name__)
+import sys
+from pathlib import Path
 
 
-def _ensure_plugin_active(**kwargs) -> None:
-    apply_runtime_patches()
+def _ensure_src_on_path() -> None:
+    """Expose ``src/`` to Hermes's directory-plugin loader."""
+    src_dir = Path(__file__).resolve().parent / "src"
+    src_text = str(src_dir)
+    if src_text not in sys.path:
+        sys.path.insert(0, src_text)
 
 
-def register(ctx) -> None:
-    try:
-        apply_runtime_patches(plugin_name=ctx.manifest.name)
-    except Exception as exc:
-        logger.debug("hermes_feishu_plugin deferred initial apply: %s", exc)
+_ensure_src_on_path()
 
-    try:
-        ctx.register_hook("pre_llm_call", _ensure_plugin_active)
-        ctx.register_hook("pre_tool_call", _ensure_plugin_active)
-        ctx.register_hook("pre_tool_call", on_pre_tool_call)
-        ctx.register_hook("post_tool_call", on_post_tool_call)
-    except Exception as exc:
-        logger.debug("hermes_feishu_plugin hook registration unavailable: %s", exc)
+from hermes_feishu_plugin.plugin import register  # noqa: E402
 
-    try:
-        synced = sync_profile_plugin_links(plugin_name=ctx.manifest.name)
-        if synced:
-            logger.info("hermes_feishu_plugin synced to profiles: %s", ", ".join(synced))
-    except Exception as exc:
-        logger.debug("hermes_feishu_plugin profile sync skipped: %s", exc)
+__all__ = ["register"]
