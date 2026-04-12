@@ -7,8 +7,8 @@ import re
 import time
 from typing import Any
 
+from ..channel.runtime_state import get_chat_state
 from .models import ToolDisplayBlock, ToolDisplayStep
-from .runtime_state import get_chat_state
 
 _DEFAULT_SUMMARY_PREFERENCE = ("matched", "code", "quoted", "url", "line")
 _MAX_BLOCK_CHARS = 1400

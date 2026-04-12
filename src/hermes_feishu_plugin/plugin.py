@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 
+from .channel.patches import apply_runtime_patches
 from .install import sync_profile_plugin_links
-from .patches import apply_runtime_patches
-from .tool_hooks import on_post_tool_call, on_pre_tool_call
+from .tools.hooks import on_post_tool_call, on_pre_tool_call
 
 logger = logging.getLogger(__name__)
 

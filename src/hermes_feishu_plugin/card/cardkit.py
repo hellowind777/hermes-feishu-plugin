@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import Any
 
-from .card_errors import CardKitApiError
+from .errors import CardKitApiError
 
 
 def _response_ok(response: Any) -> bool:

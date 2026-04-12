@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .card_errors import sanitize_text_segments_for_card
-from .i18n import select_text, with_i18n
+from ..core.i18n import select_text, with_i18n
+from .errors import sanitize_text_segments_for_card
 from .models import ToolDisplayStep
 
 STREAMING_ELEMENT_ID = "streaming_content"

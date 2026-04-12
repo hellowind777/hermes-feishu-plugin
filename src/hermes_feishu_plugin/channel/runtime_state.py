@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any
 
-from .models import ToolDisplayStep
+from ..card.models import ToolDisplayStep
 
 _CHAT_STATE_ATTR = "_hermes_feishu_chat_state"
 _CHAT_RUNTIME_REGISTRY: dict[str, dict[str, Any]] = {}

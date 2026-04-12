@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .runtime_state import get_chat_type
+from ..channel.runtime_state import get_chat_type
 
 _VALID_REPLY_MODES = {"auto", "static", "streaming"}
 
