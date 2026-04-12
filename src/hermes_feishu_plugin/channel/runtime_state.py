@@ -36,6 +36,7 @@ class ChatRuntimeState:
     tool_steps: list[ToolDisplayStep] = field(default_factory=list)
     fallback_tool_lines: list[str] = field(default_factory=list)
     tool_call_indices: dict[str, list[int]] = field(default_factory=dict)
+    fallback_switch_count: int = 0
     flush_controller: Any = None
     heartbeat_task: Any = None
 

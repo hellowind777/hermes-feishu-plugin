@@ -19,7 +19,15 @@ def _ensure_src_on_path() -> None:
         sys.path.insert(0, src_text)
 
 
+def _ensure_package_search_path() -> None:
+    """Allow early ``hermes_feishu_plugin.*`` imports through this shim."""
+    package_dir = Path(__file__).resolve().parent / "src" / "hermes_feishu_plugin"
+    if package_dir.exists():
+        globals()["__path__"] = [str(package_dir)]
+
+
 _ensure_src_on_path()
+_ensure_package_search_path()
 
 from hermes_feishu_plugin.plugin import register  # noqa: E402
 

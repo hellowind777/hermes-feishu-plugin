@@ -17,8 +17,10 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
     hermes_root = home_root / ".hermes"
     root_plugins = hermes_root / "plugins"
     default_plugins = hermes_root / "profiles" / "default" / "plugins"
+    hermes_site_packages = hermes_root / "hermes-agent" / "venv" / "lib" / "python3.11" / "site-packages"
     root_plugins.mkdir(parents=True)
     default_plugins.mkdir(parents=True)
+    hermes_site_packages.mkdir(parents=True)
 
     legacy_link = root_plugins / "hermes-feishu-plugin"
     legacy_link.symlink_to(repo_root, target_is_directory=True)
@@ -28,6 +30,8 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
 
     monkeypatch.setattr(install_module, "_resolve_plugin_root", lambda: repo_root)
     monkeypatch.setattr(install_module.Path, "home", lambda: home_root)
+    monkeypatch.setattr(install_module.site, "getsitepackages", lambda: [str(tmp_path / "site-packages")])
+    (tmp_path / "site-packages").mkdir()
 
     synced_scopes = install_module.sync_profile_plugin_links()
 
@@ -40,6 +44,9 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
     assert default_link.resolve() == repo_root
     assert not legacy_link.exists()
     assert not legacy_runtime_plugin.exists()
+    assert (root_plugins / "sitecustomize.py").read_text(encoding="utf-8") == "import hermes_feishu_plugin.startup\n"
+    assert (tmp_path / "site-packages" / "hermes_feishu_plugin_startup.pth").exists()
+    assert (hermes_site_packages / "hermes_feishu_plugin_startup.pth").exists()
 
 
 def test_project_metadata_declares_directory_plugin_and_entrypoint_support() -> None:

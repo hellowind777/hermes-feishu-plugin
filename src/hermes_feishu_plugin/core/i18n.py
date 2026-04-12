@@ -148,6 +148,13 @@ def localize_system_text(text: str) -> str:
     replacements = {
         "Cronjob Response:": "定时任务响应：",
         "Note: The agent cannot see this message, and therefore cannot respond to it.": "注意：当前代理看不到这条消息，因此无法直接回应。",
+        "Rate limited — switching to fallback provider...": "主 API 渠道触发限速，正在切换备用 API 渠道...",
+        "Primary model failed — switching to fallback:": "主模型失败，正在切换备用 API 渠道：",
+        "Empty/malformed response — switching to fallback...": "模型响应为空或格式异常，正在切换备用 API 渠道...",
+        "Non-retryable error": "不可重试错误",
+        "trying fallback": "正在尝试备用 API 渠道",
+        "Max retries": "最大重试次数",
+        "exhausted": "已耗尽",
         "Command Approval Required": "命令审批请求",
         "Reason:": "原因：",
         "script execution via -e/-c flag": "通过 -e/-c 参数执行脚本",

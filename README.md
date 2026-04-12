@@ -75,6 +75,12 @@ python3 install.py
 - `~/.hermes/plugins/hermes_feishu_plugin`
 - `~/.hermes/profiles/*/plugins/hermes_feishu_plugin`
 
+并安装早期启动加载器，确保网关在收到飞书消息前就能启用：
+
+- `Typing` 反应替代 `OK` 回执
+- fallback/限速提示折叠到同一张卡片
+- 飞书系统提示本地化
+
 同时会自动清理旧版遗留的：
 
 - `hermes-feishu-plugin` 旧命名软链

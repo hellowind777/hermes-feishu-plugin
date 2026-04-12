@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import site
 
 PLUGIN_LINK_NAME = "hermes_feishu_plugin"
 LEGACY_LINK_NAMES = ("hermes-feishu-plugin",)
 LEGACY_PLUGIN_DIR_NAMES = ("runtime_patches",)
+STARTUP_PTH_NAME = "hermes_feishu_plugin_startup.pth"
+SITECUSTOMIZE_NAME = "sitecustomize.py"
+STARTUP_IMPORT_LINE = "import hermes_feishu_plugin.startup\n"
 
 
 def _resolve_plugin_root() -> Path:
@@ -46,6 +50,42 @@ def _remove_legacy_plugin_dirs(plugins_dir: Path) -> None:
             shutil.rmtree(legacy_path)
 
 
+def _iter_site_package_dirs() -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        resolved = path.resolve() if path.exists() else path
+        if resolved in seen or not path.exists():
+            return
+        seen.add(resolved)
+        paths.append(path)
+
+    for raw_path in site.getsitepackages():
+        path = Path(raw_path)
+        add(path)
+
+    hermes_venv_lib = Path.home() / ".hermes" / "hermes-agent" / "venv" / "lib"
+    if hermes_venv_lib.exists():
+        for path in sorted(hermes_venv_lib.glob("python*/site-packages")):
+            add(path)
+
+    return paths
+
+
+def _write_startup_loader(plugins_root: Path) -> list[str]:
+    synced: list[str] = []
+    sitecustomize_path = plugins_root / SITECUSTOMIZE_NAME
+    sitecustomize_path.write_text(STARTUP_IMPORT_LINE, encoding="utf-8")
+    synced.append(str(sitecustomize_path))
+
+    for site_dir in _iter_site_package_dirs():
+        pth_path = site_dir / STARTUP_PTH_NAME
+        pth_path.write_text(STARTUP_IMPORT_LINE, encoding="utf-8")
+        synced.append(str(pth_path))
+    return synced
+
+
 def sync_profile_plugin_links(*, plugin_name: str = PLUGIN_LINK_NAME) -> list[str]:
     """Ensure the plugin is linked into root and profile plugin directories."""
     plugin_dir = _resolve_plugin_root()
@@ -70,6 +110,7 @@ def sync_profile_plugin_links(*, plugin_name: str = PLUGIN_LINK_NAME) -> list[st
         link_path.symlink_to(plugin_dir, target_is_directory=True)
         synced.append(scope)
 
+    _write_startup_loader(root / "plugins")
     return synced
 
 
