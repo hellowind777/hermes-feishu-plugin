@@ -7,3 +7,9 @@ __pycache__/
 .python-version
 .DS_Store
 Thumbs.db
+docs/*
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
