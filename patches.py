@@ -7,7 +7,6 @@ import base64
 import http
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,15 +16,12 @@ from .i18n import approval_strings, localize_system_text, translate_approval_lab
 from .mode import should_stream
 from .reaction import add_typing_reaction, clear_ack_reactions, remove_typing_reaction
 from .runtime_state import (
-    get_registered_adapter,
-    get_registered_loop,
     remember_inbound_message,
     remember_reply_target,
     remember_tool_steps,
 )
-from .status_filter import should_suppress_status_message
-from .status_filter import is_tool_progress_block, parse_tool_progress_lines
 from .state import get_reply_to_message_id, reset_reply_to_message_id, set_reply_to_message_id
+from .status_filter import parse_tool_progress_lines, should_suppress_status_message
 from .streaming import patch_streaming_cards, sync_progress_card
 
 logger = logging.getLogger(__name__)
@@ -33,13 +29,7 @@ logger = logging.getLogger(__name__)
 _PATCH_STATUS: dict[str, Any] = {
     "plugin_name": "hermes_feishu_plugin",
     "plugin_dir": str(Path(__file__).resolve().parent),
-    "patched": {
-        "feishu_typing_reaction": False,
-        "feishu_disable_ack_reaction": False,
-        "feishu_suppress_status_messages": False,
-        "feishu_streaming_cards": False,
-        "feishu_ws_card_callbacks": False,
-    },
+    "patched": {},
     "details": {},
 }
 
@@ -116,8 +106,31 @@ def _ensure_runtime_state(adapter: Any) -> tuple[dict[str, str], dict[str, tuple
     return reply_targets, typing_reactions
 
 
-def patch_suppress_status_messages() -> bool:
+async def _maybe_handle_status_message(
+    adapter: Any,
+    *,
+    chat_id: str,
+    content: str,
+    metadata: Any = None,
+    message_id: str | None = None,
+) -> Any | None:
     from gateway.platforms.base import SendResult
+
+    tool_lines = parse_tool_progress_lines(content) if chat_id else []
+    if tool_lines:
+        remember_tool_steps(adapter, chat_id, tool_lines)
+        if should_stream(adapter, chat_id):
+            patched_id = await sync_progress_card(adapter, chat_id, metadata=metadata)
+            return SendResult(success=True, message_id=patched_id or message_id)
+        return SendResult(success=True, message_id=message_id)
+
+    if should_suppress_status_message(content):
+        return SendResult(success=True, message_id=message_id)
+    return None
+
+
+def patch_suppress_status_messages() -> bool:
+    """Suppress Hermes-internal progress text so Feishu keeps one live card."""
     from gateway.platforms.feishu import FeishuAdapter
 
     original_send = FeishuAdapter.send
@@ -126,20 +139,14 @@ def patch_suppress_status_messages() -> bool:
         async def wrapped_send(self: Any, *args, **kwargs):
             content = _extract_content_from_send_args(args, kwargs)
             chat_id = str(kwargs.get("chat_id") or (args[0] if len(args) >= 1 else "") or "").strip()
-            metadata = kwargs.get("metadata")
-            tool_steps = parse_tool_progress_lines(content) if chat_id else []
-            if tool_steps:
-                remember_tool_steps(self, chat_id, tool_steps)
-                if should_stream(self, chat_id):
-                    message_id = await sync_progress_card(self, chat_id, metadata=metadata)
-                    return SendResult(success=True, message_id=message_id)
-                return SendResult(success=True)
-            if should_suppress_status_message(content):
-                logger.info(
-                    "hermes_feishu_plugin suppressed Feishu status send: %s",
-                    content.splitlines()[0][:160],
-                )
-                return SendResult(success=True)
+            handled = await _maybe_handle_status_message(
+                self,
+                chat_id=chat_id,
+                content=content,
+                metadata=kwargs.get("metadata"),
+            )
+            if handled is not None:
+                return handled
             localized = localize_system_text(content)
             args, kwargs = _replace_send_content(args, kwargs, localized)
             return await original_send(self, *args, **kwargs)
@@ -153,20 +160,15 @@ def patch_suppress_status_messages() -> bool:
         async def wrapped_edit(self: Any, *args, **kwargs):
             content = _extract_content_from_edit_args(args, kwargs)
             chat_id = str(kwargs.get("chat_id") or (args[0] if len(args) >= 1 else "") or "").strip()
-            message_id = kwargs.get("message_id") or (args[1] if len(args) >= 2 else None)
-            tool_steps = parse_tool_progress_lines(content) if chat_id else []
-            if tool_steps:
-                remember_tool_steps(self, chat_id, tool_steps)
-                if should_stream(self, chat_id):
-                    patched_id = await sync_progress_card(self, chat_id)
-                    return SendResult(success=True, message_id=patched_id or message_id)
-                return SendResult(success=True, message_id=message_id)
-            if should_suppress_status_message(content):
-                logger.info(
-                    "hermes_feishu_plugin suppressed Feishu status edit: %s",
-                    content.splitlines()[0][:160],
-                )
-                return SendResult(success=True, message_id=message_id)
+            message_id = str(kwargs.get("message_id") or (args[1] if len(args) >= 2 else "") or "").strip()
+            handled = await _maybe_handle_status_message(
+                self,
+                chat_id=chat_id,
+                content=content,
+                message_id=message_id,
+            )
+            if handled is not None:
+                return handled
             localized = localize_system_text(content)
             args, kwargs = _replace_edit_content(args, kwargs, localized)
             return await original_edit(self, *args, **kwargs)
@@ -177,103 +179,8 @@ def patch_suppress_status_messages() -> bool:
     return True
 
 
-def patch_subagent_progress_relay() -> bool:
-    from tools import delegate_tool
-
-    original_build = delegate_tool._build_child_progress_callback
-    if getattr(original_build, "__hermes_feishu_plugin_wrapped__", False):
-        return True
-
-    def wrapped_build(task_index: int, parent_agent: Any, task_count: int = 1):
-        spinner = getattr(parent_agent, "_delegate_spinner", None)
-        parent_cb = getattr(parent_agent, "tool_progress_callback", None)
-
-        if not spinner and not parent_cb:
-            return None
-
-        prefix = f"[{task_index + 1}] " if task_count > 1 else ""
-        relay_label = f"子代理{task_index + 1}" if task_count > 1 else "子代理"
-
-        def _push_progress_direct(tool_name: str | None, preview: str | None) -> None:
-            chat_id = str(os.getenv("HERMES_SESSION_CHAT_ID", "") or "").strip()
-            if not chat_id:
-                return
-            adapter = get_registered_adapter(chat_id)
-            loop = get_registered_loop(chat_id)
-            if not adapter or not loop or not should_stream(adapter, chat_id):
-                return
-
-            from agent.display import get_tool_emoji
-
-            emoji = get_tool_emoji(tool_name or "", default="⚙️")
-            line = f"{emoji} {tool_name or 'subagent'}"
-            if preview:
-                line += f': "{preview}"'
-
-            async def _apply() -> None:
-                remember_tool_steps(adapter, chat_id, [line])
-                await sync_progress_card(adapter, chat_id)
-
-            try:
-                asyncio.run_coroutine_threadsafe(_apply(), loop)
-            except Exception as exc:
-                logger.debug("Direct subagent card relay failed: %s", exc)
-
-        def _relay_to_parent(tool_name: str | None, preview: str | None, args: Any) -> None:
-            if not parent_cb:
-                return
-            relay_preview = str(preview or "").strip()
-            if relay_preview:
-                relay_preview = f"{relay_label} · {relay_preview}"
-            else:
-                relay_preview = relay_label
-            try:
-                parent_cb(
-                    "tool.started",
-                    tool_name or "subagent",
-                    relay_preview,
-                    args if isinstance(args, dict) else {"source": "subagent", "task_index": task_index + 1},
-                )
-            except Exception as exc:
-                logger.debug("Parent callback failed for subagent relay: %s", exc)
-
-        def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-            if event_type in ("_thinking", "reasoning.available"):
-                text = str(preview or tool_name or "").strip()
-                if spinner and text:
-                    short = (text[:55] + "...") if len(text) > 55 else text
-                    try:
-                        spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
-                    except Exception as exc:
-                        logger.debug("Spinner print_above failed: %s", exc)
-                return
-
-            if event_type == "tool.completed":
-                return
-
-            if spinner:
-                short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
-                from agent.display import get_tool_emoji
-                emoji = get_tool_emoji(tool_name or "")
-                line = f" {prefix}├─ {emoji} {tool_name}"
-                if short:
-                    line += f"  \"{short}\""
-                try:
-                    spinner.print_above(line)
-                except Exception as exc:
-                    logger.debug("Spinner print_above failed: %s", exc)
-
-            _push_progress_direct(tool_name, preview)
-            _relay_to_parent(tool_name, preview, args)
-
-        return _callback
-
-    wrapped_build.__hermes_feishu_plugin_wrapped__ = True
-    delegate_tool._build_child_progress_callback = wrapped_build
-    return True
-
-
 def patch_feishu_websocket_card_callbacks() -> bool:
+    """Patch Python lark_oapi WS client so CardKit/card action callbacks reach Hermes."""
     try:
         from lark_oapi.ws import client as ws_client_mod
     except Exception:
@@ -299,16 +206,6 @@ def patch_feishu_websocket_card_callbacks() -> bool:
             payload = self._combine(msg_id, int(sum_), int(seq), payload)
             if payload is None:
                 return
-
-        ws_client_mod.logger.debug(
-            self._fmt_log(
-                "receive message, message_type: {}, message_id: {}, trace_id: {}, payload: {}",
-                message_type.value,
-                msg_id,
-                trace_id,
-                payload.decode(ws_client_mod.UTF_8),
-            )
-        )
 
         response = ws_client_mod.Response(code=http.HTTPStatus.OK)
         try:
@@ -343,21 +240,16 @@ def patch_feishu_websocket_card_callbacks() -> bool:
 def _approval_state_keys(raw_value: Any) -> list[Any]:
     keys: list[Any] = []
 
-    def _add(candidate: Any) -> None:
-        if candidate is None:
-            return
-        if candidate not in keys:
+    def add(candidate: Any) -> None:
+        if candidate is not None and candidate not in keys:
             keys.append(candidate)
 
-    _add(raw_value)
+    add(raw_value)
     text = str(raw_value or "").strip()
     if text:
-        _add(text)
+        add(text)
         if text.isdigit():
-            try:
-                _add(int(text))
-            except ValueError:
-                pass
+            add(int(text))
     return keys
 
 
@@ -366,20 +258,20 @@ def _pop_approval_state(adapter: Any, approval_id: Any, chat_id: str) -> tuple[A
         if key in adapter._approval_state:
             return key, adapter._approval_state.pop(key, None)
 
-    if chat_id:
-        matches = [
-            (key, value)
-            for key, value in list(adapter._approval_state.items())
-            if str((value or {}).get("chat_id", "") or "").strip() == chat_id
-        ]
-        if len(matches) == 1:
-            key, value = matches[0]
-            adapter._approval_state.pop(key, None)
-            return key, value
+    matches = [
+        (key, value)
+        for key, value in list(adapter._approval_state.items())
+        if str((value or {}).get("chat_id", "") or "").strip() == chat_id
+    ]
+    if len(matches) == 1:
+        key, value = matches[0]
+        adapter._approval_state.pop(key, None)
+        return key, value
     return None, None
 
 
 def patch_exec_approval_localization() -> bool:
+    """Localize approval cards and tolerate callback payload differences."""
     from gateway.platforms.base import SendResult
     from gateway.platforms.feishu import FeishuAdapter
 
@@ -397,68 +289,52 @@ def patch_exec_approval_localization() -> bool:
             if not self._client:
                 return SendResult(success=False, error="Not connected")
 
-            try:
-                strings = approval_strings()
-                approval_id = str(next(self._approval_counter))
-                cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            strings = approval_strings()
+            approval_id = str(next(self._approval_counter))
+            cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
 
-                def _btn(label: str, action_name: str, btn_type: str = "default") -> dict[str, Any]:
-                    return {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": label},
-                        "type": btn_type,
-                        "value": {"hermes_action": action_name, "approval_id": approval_id},
-                    }
-
-                description_text = localize_system_text(description)
-                card = {
-                    "config": {"wide_screen_mode": True},
-                    "header": {
-                        "title": {"content": strings["title"], "tag": "plain_text"},
-                        "template": "orange",
-                    },
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": f"```\n{cmd_preview}\n```\n**{strings['reason_label']}：** {description_text}\n\n{strings['fallback_hint']}",
-                        },
-                        {
-                            "tag": "action",
-                            "actions": [
-                                _btn(strings["allow_once"], "approve_once", "primary"),
-                                _btn(strings["allow_session"], "approve_session"),
-                                _btn(strings["allow_always"], "approve_always"),
-                                _btn(strings["deny"], "deny", "danger"),
-                            ],
-                        },
-                    ],
+            def btn(label: str, action_name: str, btn_type: str = "default") -> dict[str, Any]:
+                return {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": label},
+                    "type": btn_type,
+                    "value": {"hermes_action": action_name, "approval_id": approval_id},
                 }
 
-                response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type="interactive",
-                    payload=json.dumps(card, ensure_ascii=False),
-                    reply_to=None,
-                    metadata=metadata,
-                )
-                result = self._finalize_send_result(response, "send_exec_approval failed")
-                if result.success:
-                    self._approval_state[approval_id] = {
-                        "session_key": session_key,
-                        "message_id": result.message_id or "",
-                        "chat_id": chat_id,
-                    }
-                return result
-            except Exception as exc:
-                logger.warning("[Feishu] localized send_exec_approval failed: %s", exc)
-                return await original_send_exec(
-                    self,
-                    chat_id=chat_id,
-                    command=command,
-                    session_key=session_key,
-                    description=description,
-                    metadata=metadata,
-                )
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"content": strings["title"], "tag": "plain_text"}, "template": "orange"},
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"```\n{cmd_preview}\n```\n**{strings['reason_label']}：** {localize_system_text(description)}\n\n{strings['fallback_hint']}",
+                    },
+                    {
+                        "tag": "action",
+                        "actions": [
+                            btn(strings["allow_once"], "approve_once", "primary"),
+                            btn(strings["allow_session"], "approve_session"),
+                            btn(strings["allow_always"], "approve_always"),
+                            btn(strings["deny"], "deny", "danger"),
+                        ],
+                    },
+                ],
+            }
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=json.dumps(card, ensure_ascii=False),
+                reply_to=None,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send_exec_approval failed")
+            if result.success:
+                self._approval_state[approval_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                }
+            return result
 
         wrapped_send_exec.__hermes_feishu_plugin_wrapped__ = True
         FeishuAdapter.send_exec_approval = wrapped_send_exec
@@ -478,122 +354,85 @@ def patch_exec_approval_localization() -> bool:
                     "title": {"content": f"{icon} {localized_label}", "tag": "plain_text"},
                     "template": "red" if choice == "deny" else "green",
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": f"{icon} **{localized_label}** · {strings['by_user']}：{user_name}",
-                    },
-                ],
+                "elements": [{"tag": "markdown", "content": f"{icon} **{localized_label}** · {strings['by_user']}：{user_name}"}],
             }
-            try:
-                payload = json.dumps(card, ensure_ascii=False)
-                body = self._build_update_message_body(msg_type="interactive", content=payload)
-                request = self._build_update_message_request(message_id=message_id, request_body=body)
-                await asyncio.to_thread(self._client.im.v1.message.update, request)
-            except Exception as exc:
-                logger.warning("[Feishu] Failed to update localized approval card %s: %s", message_id, exc)
+            payload = json.dumps(card, ensure_ascii=False)
+            body = self._build_update_message_body(msg_type="interactive", content=payload)
+            request = self._build_update_message_request(message_id=message_id, request_body=body)
+            await asyncio.to_thread(self._client.im.v1.message.update, request)
 
         wrapped_update_card.__hermes_feishu_plugin_wrapped__ = True
         FeishuAdapter._update_approval_card = wrapped_update_card
 
     original_handle_action = FeishuAdapter._handle_card_action_event
-    if not getattr(original_handle_action, "__hermes_feishu_plugin_wrapped__", False):
+    if getattr(original_handle_action, "__hermes_feishu_plugin_wrapped__", False):
+        return True
 
-        async def wrapped_handle_action(self: Any, data: Any) -> None:
-            event = getattr(data, "event", None)
-            action = getattr(event, "action", None)
-            action_value = getattr(action, "value", {}) or {}
-            hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
-            if not hermes_action:
-                return await original_handle_action(self, data)
+    async def wrapped_handle_action(self: Any, data: Any) -> None:
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = getattr(action, "value", {}) or {}
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+        if not hermes_action:
+            return await original_handle_action(self, data)
 
-            token = str(getattr(event, "token", "") or "")
-            if token and self._is_card_action_duplicate(token):
-                logger.debug("[Feishu] Dropping duplicate approval card action token: %s", token)
-                return
+        token = str(getattr(event, "token", "") or "")
+        if token and self._is_card_action_duplicate(token):
+            return
 
-            context = getattr(event, "context", None)
-            chat_id = str(
-                getattr(context, "open_chat_id", "")
-                or getattr(context, "chat_id", "")
-                or getattr(event, "open_chat_id", "")
-                or ""
-            )
-            operator = getattr(event, "operator", None)
-            open_id = str(getattr(operator, "open_id", "") or "")
-            user_id = str(getattr(operator, "user_id", "") or "")
-            union_id = str(getattr(operator, "union_id", "") or "")
+        context = getattr(event, "context", None)
+        chat_id = str(getattr(context, "open_chat_id", "") or getattr(context, "chat_id", "") or "")
+        matched_key, state = _pop_approval_state(self, action_value.get("approval_id"), chat_id)
+        if not state:
+            logger.warning("[Feishu] Approval state not found: raw_id=%r chat_id=%s", action_value.get("approval_id"), chat_id)
+            return
 
-            matched_key, state = _pop_approval_state(self, action_value.get("approval_id"), chat_id)
-            if not state:
-                logger.warning(
-                    "[Feishu] Approval action received but state was not found: raw_id=%r chat_id=%s keys=%s",
-                    action_value.get("approval_id"),
-                    chat_id,
-                    list(self._approval_state.keys())[:10],
-                )
-                return
+        choice_map = {
+            "approve_once": "once",
+            "approve_session": "session",
+            "approve_always": "always",
+            "deny": "deny",
+        }
+        choice = choice_map.get(hermes_action, "deny")
+        strings = approval_strings()
+        label = {
+            "once": strings["approved_once"],
+            "session": strings["approved_session"],
+            "always": strings["approved_always"],
+            "deny": strings["denied"],
+        }.get(choice, strings["resolved"])
 
-            choice_map = {
-                "approve_once": "once",
-                "approve_session": "session",
-                "approve_always": "always",
-                "deny": "deny",
-            }
-            choice = choice_map.get(hermes_action, "deny")
-            strings = approval_strings()
-            label_map = {
-                "once": strings["approved_once"],
-                "session": strings["approved_session"],
-                "always": strings["approved_always"],
-                "deny": strings["denied"],
-            }
-            label = label_map.get(choice, strings["resolved"])
-
-            sender_profile: dict[str, Any] = {}
-            if open_id or user_id or union_id:
-                try:
-                    sender_profile = await self._resolve_sender_profile(
-                        SimpleNamespace(
-                            open_id=open_id or None,
-                            user_id=user_id or None,
-                            union_id=union_id or None,
-                        )
-                    )
-                except Exception as exc:
-                    logger.debug("[Feishu] Failed to resolve sender for approval card: %s", exc)
-            user_name = (
-                sender_profile.get("user_name")
-                or open_id
-                or user_id
-                or union_id
-                or strings["unknown_user"]
-            )
-
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_id = str(getattr(operator, "user_id", "") or "")
+        union_id = str(getattr(operator, "union_id", "") or "")
+        sender_profile: dict[str, Any] = {}
+        if open_id or user_id or union_id:
             try:
-                from tools.approval import resolve_gateway_approval
-
-                count = resolve_gateway_approval(state["session_key"], choice)
-                logger.info(
-                    "[Feishu] Approval resolved: matched=%r session=%s choice=%s count=%d user=%s",
-                    matched_key,
-                    state["session_key"],
-                    choice,
-                    count,
-                    user_name,
+                sender_profile = await self._resolve_sender_profile(
+                    SimpleNamespace(open_id=open_id or None, user_id=user_id or None, union_id=union_id or None)
                 )
             except Exception as exc:
-                logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+                logger.debug("[Feishu] Failed to resolve approval sender: %s", exc)
+        user_name = sender_profile.get("user_name") or open_id or user_id or union_id or strings["unknown_user"]
 
-            await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
+        try:
+            from tools.approval import resolve_gateway_approval
 
-        wrapped_handle_action.__hermes_feishu_plugin_wrapped__ = True
-        FeishuAdapter._handle_card_action_event = wrapped_handle_action
+            count = resolve_gateway_approval(state["session_key"], choice)
+            logger.info("[Feishu] Approval resolved: matched=%r session=%s choice=%s count=%d", matched_key, state["session_key"], choice, count)
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
+        await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
+
+    wrapped_handle_action.__hermes_feishu_plugin_wrapped__ = True
+    FeishuAdapter._handle_card_action_event = wrapped_handle_action
     return True
 
 
 def patch_disable_ack_reaction() -> bool:
+    """Disable Hermes' old persistent OK acknowledgement reaction."""
     from gateway.platforms.feishu import FeishuAdapter
 
     original_add_ack = FeishuAdapter._add_ack_reaction
@@ -611,6 +450,7 @@ def patch_disable_ack_reaction() -> bool:
 
 
 def patch_typing_reaction() -> bool:
+    """Use official-style transient Typing reaction while processing."""
     from gateway.platforms.feishu import FeishuAdapter
 
     original_guarded = FeishuAdapter._handle_message_with_guards
@@ -621,17 +461,13 @@ def patch_typing_reaction() -> bool:
 
         async def wrapped_send_typing(self: Any, chat_id: str, metadata=None) -> None:
             reply_targets, typing_reactions = _ensure_runtime_state(self)
-            message_id = (
-                get_reply_to_message_id()
-                or str(reply_targets.get(chat_id, "") or "").strip()
-            )
+            message_id = get_reply_to_message_id() or str(reply_targets.get(chat_id, "") or "").strip()
             if not message_id:
                 return await original_send_typing(self, chat_id, metadata=metadata)
 
             active = typing_reactions.get(chat_id)
             if active and active[0] == message_id and active[1]:
                 return None
-
             if active and active[0] and active[1]:
                 await remove_typing_reaction(self, active[0], active[1])
                 typing_reactions.pop(chat_id, None)
@@ -642,7 +478,6 @@ def patch_typing_reaction() -> bool:
                 typing_reactions[chat_id] = (message_id, reaction_id)
                 reply_targets[chat_id] = message_id
                 return None
-
             return await original_send_typing(self, chat_id, metadata=metadata)
 
         wrapped_send_typing.__hermes_feishu_plugin_wrapped__ = True
@@ -667,12 +502,13 @@ def patch_typing_reaction() -> bool:
         return True
 
     async def wrapped_guarded(self: Any, event: Any) -> None:
-        chat_id = getattr(event.source, "chat_id", "") or "" if getattr(event, "source", None) else ""
+        source = getattr(event, "source", None)
+        chat_id = getattr(source, "chat_id", "") or ""
         chat_lock = self._get_chat_lock(chat_id)
         message_id = getattr(event, "message_id", "") or ""
+        chat_type = getattr(source, "chat_type", "dm") if source else "dm"
         reply_targets, _typing_reactions = _ensure_runtime_state(self)
         reply_token = set_reply_to_message_id(message_id)
-        chat_type = getattr(getattr(event, "source", None), "chat_type", "dm")
 
         async with chat_lock:
             try:
@@ -695,49 +531,21 @@ def patch_typing_reaction() -> bool:
 
 
 def apply_runtime_patches(*, plugin_name: str = "hermes_feishu_plugin") -> dict[str, Any]:
+    """Apply all Feishu runtime patches idempotently."""
     _PATCH_STATUS["plugin_name"] = plugin_name
-    for key, patch_fn, detail in (
-        (
-            "feishu_ws_card_callbacks",
-            patch_feishu_websocket_card_callbacks,
-            "Patch Python lark_oapi websocket client so card.action.trigger frames are handled instead of being dropped",
-        ),
-        (
-            "feishu_typing_reaction",
-            patch_typing_reaction,
-            "Use transient Typing reaction while processing inbound Feishu messages",
-        ),
-        (
-            "feishu_disable_ack_reaction",
-            patch_disable_ack_reaction,
-            "Disable Hermes built-in persistent OK acknowledgement reaction",
-        ),
-        (
-            "feishu_suppress_status_messages",
-            patch_suppress_status_messages,
-            "Suppress Feishu retry/fallback/context-pressure/tool-progress status messages so only the single reply card remains visible",
-        ),
-        (
-            "feishu_exec_approval_localization",
-            patch_exec_approval_localization,
-            "Localize approval cards and make Feishu approval action handling more tolerant to callback payload differences",
-        ),
-        (
-            "feishu_subagent_progress_relay",
-            patch_subagent_progress_relay,
-            "Relay delegated child tool activity into the parent progress channel so Feishu cards can show live subagent stages",
-        ),
-        (
-            "feishu_streaming_cards",
-            patch_streaming_cards,
-            "Use a single reply-to interactive card for Feishu streaming updates and final answer delivery",
-        ),
-    ):
+    patch_plan = (
+        ("feishu_ws_card_callbacks", patch_feishu_websocket_card_callbacks, "Handle card.action.trigger WS frames instead of dropping them"),
+        ("feishu_typing_reaction", patch_typing_reaction, "Use official-style transient Typing reaction"),
+        ("feishu_disable_ack_reaction", patch_disable_ack_reaction, "Disable persistent OK acknowledgement reaction"),
+        ("feishu_suppress_status_messages", patch_suppress_status_messages, "Suppress progress/status noise and route progress into the live card"),
+        ("feishu_exec_approval_localization", patch_exec_approval_localization, "Localize approval cards and callbacks"),
+        ("feishu_streaming_cards", patch_streaming_cards, "Use CardKit-first single-card streaming with IM patch fallback"),
+    )
+    for key, patch_fn, detail in patch_plan:
         try:
             ok = patch_fn()
             _PATCH_STATUS["patched"][key] = bool(ok)
-            if ok:
-                _PATCH_STATUS["details"][key] = detail
+            _PATCH_STATUS["details"][key] = detail if ok else "not applied"
         except Exception as exc:
             _PATCH_STATUS["patched"][key] = False
             _PATCH_STATUS["details"][key] = f"deferred: {exc}"
@@ -746,6 +554,7 @@ def apply_runtime_patches(*, plugin_name: str = "hermes_feishu_plugin") -> dict[
 
 
 def get_patch_status() -> dict[str, Any]:
+    """Return patch status for diagnostics."""
     return {
         "plugin_name": _PATCH_STATUS["plugin_name"],
         "plugin_dir": _PATCH_STATUS["plugin_dir"],
