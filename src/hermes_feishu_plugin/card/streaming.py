@@ -42,7 +42,7 @@ from .cardkit import (
 )
 from .errors import is_card_rate_limit_error, is_card_table_limit_error
 from .flush_controller import FlushController
-from .live_state import current_progress_text, elapsed_ms, get_card_update_lock, should_show_tool_use, visible_tool_steps
+from .live_state import current_heartbeat_text, current_progress_text, elapsed_ms, get_card_update_lock, should_show_tool_use, visible_tool_steps
 from .streaming_support import ensure_progress_heartbeat, is_feishu_adapter, resolve_reply_to_message_id, response_ok, strip_cursor
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ async def _ensure_card_created(
             tool_steps=steps,
             tool_elapsed_ms=tool_elapsed_ms,
             status_text=status_text,
+            heartbeat_text=current_heartbeat_text(adapter, chat_id),
             show_tool_use=should_show_tool_use(adapter, chat_id),
         )
 
@@ -182,6 +183,7 @@ async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
         text=text,
         tool_steps=visible_tool_steps(adapter, chat_id),
         status_text=get_pending_status_text(adapter, chat_id),
+        heartbeat_text=current_heartbeat_text(adapter, chat_id),
         show_tool_use=should_show_tool_use(adapter, chat_id),
     )
     async with get_card_update_lock(adapter, chat_id):
@@ -212,8 +214,9 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
 
     steps = visible_tool_steps(adapter, chat_id)
     status_text = get_pending_status_text(adapter, chat_id)
+    heartbeat_text = current_heartbeat_text(adapter, chat_id)
     text = current_progress_text(adapter, chat_id)
-    if not steps and not status_text:
+    if not steps and not status_text and not heartbeat_text:
         return message_id
 
     now = asyncio.get_running_loop().time()
@@ -226,6 +229,7 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
         tool_steps=steps,
         tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
         status_text=status_text,
+        heartbeat_text=heartbeat_text,
         show_tool_use=should_show_tool_use(adapter, chat_id),
     )
     active_card_id = get_card_id(adapter, chat_id)

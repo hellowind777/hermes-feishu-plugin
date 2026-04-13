@@ -10,6 +10,7 @@ from ..channel.runtime_state import (
     get_display_text,
     get_elapsed_seconds,
     get_fallback_tool_lines,
+    get_heartbeat_status_text,
     get_last_flushed_text,
     get_tool_steps,
 )
@@ -22,6 +23,11 @@ def current_progress_text(adapter: Any, chat_id: str) -> str:
     if display_text.strip():
         return display_text
     return get_last_flushed_text(adapter, chat_id)
+
+
+def current_heartbeat_text(adapter: Any, chat_id: str) -> str:
+    """Return the current lightweight heartbeat note."""
+    return get_heartbeat_status_text(adapter, chat_id)
 
 
 def visible_tool_steps(adapter: Any, chat_id: str) -> list[Any]:

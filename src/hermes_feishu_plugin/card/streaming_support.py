@@ -15,6 +15,7 @@ from ..channel.runtime_state import (
     set_heartbeat_task,
 )
 from ..channel.state import get_reply_to_message_id
+from .heartbeat import refresh_heartbeat_status
 from .live_state import visible_tool_steps
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,10 @@ async def _progress_heartbeat(
             state = get_chat_state(adapter, chat_id)
             if state.phase in {"completed", "aborted", "terminated"} or not state.card_message_id:
                 return
+            heartbeat_changed = refresh_heartbeat_status(adapter, chat_id)
+            if heartbeat_changed:
+                await sync_callback(adapter, chat_id)
+                continue
             if state.display_text.strip():
                 continue
             if not (visible_tool_steps(adapter, chat_id) or get_pending_status_text(adapter, chat_id)):

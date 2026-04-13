@@ -29,8 +29,10 @@ class ChatRuntimeState:
     cardkit_streaming_enabled: bool = True
     last_card_update_at: float = 0.0
     last_tool_status_update_at: float = 0.0
+    last_visible_activity_at: float = 0.0
     display_text: str = ""
     pending_status_text: str = ""
+    heartbeat_status_text: str = ""
     last_flushed_text: str = ""
     tool_started_at: float = 0.0
     tool_elapsed_ms: int = 0
@@ -93,11 +95,13 @@ def reset_chat_state(
             except Exception:
                 pass
 
+    now = time.monotonic()
     state = ChatRuntimeState(
         generation=previous_generation + 1,
         reply_to_message_id=str(reply_to_message_id or "").strip(),
         chat_type=_normalize_chat_type(chat_type),
-        started_at=time.monotonic(),
+        started_at=now,
+        last_visible_activity_at=now,
         phase="idle",
     )
     _get_state_map(adapter)[key] = state
@@ -185,9 +189,11 @@ def get_last_card_update_at(adapter: Any, chat_id: str) -> float:
 def remember_display_text(adapter: Any, chat_id: str, text: str) -> None:
     """Persist the latest visible streamed text."""
     state = get_chat_state(adapter, chat_id)
-    state.display_text = str(text or "")
-    if state.display_text.strip():
+    next_text = str(text or "")
+    if next_text != state.display_text and next_text.strip():
+        note_visible_activity(adapter, chat_id)
         state.pending_status_text = ""
+    state.display_text = next_text
 
 
 def get_display_text(adapter: Any, chat_id: str) -> str:
@@ -197,12 +203,26 @@ def get_display_text(adapter: Any, chat_id: str) -> str:
 
 def remember_pending_status_text(adapter: Any, chat_id: str, text: str) -> None:
     """Persist the latest pre-answer status text shown in the live card."""
-    get_chat_state(adapter, chat_id).pending_status_text = str(text or "").strip()
+    state = get_chat_state(adapter, chat_id)
+    next_text = str(text or "").strip()
+    if next_text and next_text != state.pending_status_text:
+        note_visible_activity(adapter, chat_id)
+    state.pending_status_text = next_text
 
 
 def get_pending_status_text(adapter: Any, chat_id: str) -> str:
     """Return the latest pre-answer status text."""
     return get_chat_state(adapter, chat_id).pending_status_text.strip()
+
+
+def get_heartbeat_status_text(adapter: Any, chat_id: str) -> str:
+    """Return the lightweight in-card heartbeat text."""
+    return get_chat_state(adapter, chat_id).heartbeat_status_text.strip()
+
+
+def set_heartbeat_status_text(adapter: Any, chat_id: str, text: str) -> None:
+    """Persist the lightweight in-card heartbeat text."""
+    get_chat_state(adapter, chat_id).heartbeat_status_text = str(text or "").strip()
 
 
 def remember_last_flushed_text(adapter: Any, chat_id: str, text: str) -> None:
@@ -222,10 +242,15 @@ def remember_tool_steps(adapter: Any, chat_id: str, tool_steps: list[Any]) -> No
     state = get_chat_state(adapter, chat_id)
     structured = [step for step in tool_steps if isinstance(step, ToolDisplayStep)]
     if structured:
+        if structured != state.tool_steps:
+            note_visible_activity(adapter, chat_id)
         state.tool_steps = structured
         state.fallback_tool_lines.clear()
         return
-    state.fallback_tool_lines = [str(step).strip() for step in tool_steps if str(step).strip()]
+    next_lines = [str(step).strip() for step in tool_steps if str(step).strip()]
+    if next_lines != state.fallback_tool_lines and next_lines:
+        note_visible_activity(adapter, chat_id)
+    state.fallback_tool_lines = next_lines
 
 
 def get_tool_steps(adapter: Any, chat_id: str) -> list[ToolDisplayStep]:
@@ -259,6 +284,19 @@ def get_elapsed_seconds(adapter: Any, chat_id: str) -> float | None:
     if started_at <= 0:
         return None
     return max(0.0, time.monotonic() - started_at)
+
+
+def note_visible_activity(adapter: Any, chat_id: str) -> None:
+    """Record visible progress and clear any stale heartbeat notice."""
+    state = get_chat_state(adapter, chat_id)
+    state.last_visible_activity_at = time.monotonic()
+    state.heartbeat_status_text = ""
+
+
+def get_last_visible_activity_at(adapter: Any, chat_id: str) -> float:
+    """Return the last time the live card showed real progress."""
+    state = get_chat_state(adapter, chat_id)
+    return float(state.last_visible_activity_at or state.started_at or 0.0)
 
 
 def get_heartbeat_task(adapter: Any, chat_id: str) -> Any:

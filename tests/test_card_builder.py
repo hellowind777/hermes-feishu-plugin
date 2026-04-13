@@ -52,6 +52,20 @@ def test_build_streaming_pre_answer_card_can_render_status_text() -> None:
     assert content_element["content"] == "已切换到第 1 备用 API 渠道：codexzh"
 
 
+def test_build_streaming_pre_answer_card_can_render_heartbeat_text() -> None:
+    """Heartbeat text should stay in a dedicated status area, not overwrite answer text."""
+    card = build_streaming_pre_answer_card(
+        text="已有正文",
+        heartbeat_text="仍在处理中 · 最近 10 分钟无新进展",
+    )
+
+    heartbeat_element = next(element for element in card["body"]["elements"] if element.get("element_id") == "heartbeat_status")
+    content_element = next(element for element in card["body"]["elements"] if element.get("element_id") == STREAMING_ELEMENT_ID)
+
+    assert content_element["content"] == "已有正文"
+    assert heartbeat_element["content"] == "仍在处理中 · 最近 10 分钟无新进展"
+
+
 def test_build_streaming_pre_answer_card_preserves_streamed_text_during_progress_updates() -> None:
     """Progress refreshes should keep the already streamed visible text."""
     card = build_streaming_pre_answer_card(

@@ -46,6 +46,7 @@ def build_streaming_tool_use_active_panel(
     steps: list[ToolDisplayStep],
     *,
     tool_elapsed_ms: int | None,
+    heartbeat_text: str = "",
 ) -> dict[str, Any]:
     """Build the expanded pre-answer tool-use panel."""
     zh_parts = ["工具执行"]
@@ -57,6 +58,9 @@ def build_streaming_tool_use_active_panel(
         duration = format_elapsed(tool_elapsed_ms)
         zh_parts.append(f"({duration})")
         en_parts.append(f"({duration})")
+    if heartbeat_text.strip():
+        zh_parts.append(heartbeat_text)
+        en_parts.append(heartbeat_text)
 
     return {
         "tag": "collapsible_panel",

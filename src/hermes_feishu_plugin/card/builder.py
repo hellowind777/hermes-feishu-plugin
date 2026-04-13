@@ -66,6 +66,7 @@ def build_streaming_pre_answer_card(
     tool_steps: list[ToolDisplayStep] | None = None,
     tool_elapsed_ms: int | None = None,
     status_text: str = "",
+    heartbeat_text: str = "",
     show_tool_use: bool = True,
 ) -> dict[str, Any]:
     """Build the official-style CardKit 2.0 pre-answer streaming card."""
@@ -74,7 +75,11 @@ def build_streaming_pre_answer_card(
 
     if show_tool_use:
         elements.append(
-            build_streaming_tool_use_active_panel(steps, tool_elapsed_ms=tool_elapsed_ms)
+            build_streaming_tool_use_active_panel(
+                steps,
+                tool_elapsed_ms=tool_elapsed_ms,
+                heartbeat_text=heartbeat_text,
+            )
             if steps
             else build_streaming_tool_use_pending_panel()
         )
@@ -101,6 +106,17 @@ def build_streaming_pre_answer_card(
             "element_id": "loading_icon",
         }
     )
+    if heartbeat_text.strip() and not steps:
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": heartbeat_text,
+                "text_align": "left",
+                "text_size": "notation",
+                "margin": "4px 0px 0px 0px",
+                "element_id": "heartbeat_status",
+            }
+        )
 
     return {
         "schema": "2.0",
@@ -121,6 +137,7 @@ def build_streaming_patch_card(
     text: str = "",
     tool_steps: list[ToolDisplayStep] | None = None,
     status_text: str = "",
+    heartbeat_text: str = "",
     show_tool_use: bool = True,
 ) -> dict[str, Any]:
     """Build the IM patch fallback streaming card."""
@@ -147,6 +164,9 @@ def build_streaming_patch_card(
         elements.append({"tag": "markdown", "content": _optimize_markdown_style(answer)})
     elif status_text.strip():
         elements.append({"tag": "markdown", "content": _optimize_markdown_style(status_text)})
+
+    if heartbeat_text.strip():
+        elements.append({"tag": "markdown", "content": heartbeat_text, "text_size": "notation"})
 
     return {
         "config": {
