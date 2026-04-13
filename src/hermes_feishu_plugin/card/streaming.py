@@ -8,25 +8,17 @@ from typing import Any
 
 from ..channel.runtime_state import (
     advance_card_sequence,
-    clear_heartbeat_task,
     disable_cardkit_streaming,
     get_card_id,
     get_chat_state,
-    get_elapsed_seconds,
-    get_fallback_tool_lines,
-    get_heartbeat_task,
-    get_last_flushed_text,
     get_original_card_id,
     get_pending_status_text,
-    get_reply_target,
     get_tool_elapsed_ms,
-    get_tool_steps,
     remember_card_entity,
     remember_card_message,
     remember_display_text,
     remember_last_flushed_text,
     remember_tool_steps,
-    set_heartbeat_task,
 )
 from ..channel.state import get_reply_to_message_id
 from ..channel.status_filter import parse_tool_progress_lines, should_suppress_status_message
@@ -50,90 +42,14 @@ from .cardkit import (
 )
 from .errors import is_card_rate_limit_error, is_card_table_limit_error
 from .flush_controller import FlushController
-from .tool_display import fallback_steps_from_lines
+from .live_state import current_progress_text, elapsed_ms, get_card_update_lock, should_show_tool_use, visible_tool_steps
+from .streaming_support import ensure_progress_heartbeat, is_feishu_adapter, resolve_reply_to_message_id, response_ok, strip_cursor
 
 logger = logging.getLogger(__name__)
 
 CARDKIT_UPDATE_INTERVAL_SECONDS = 0.1
 PATCH_UPDATE_INTERVAL_SECONDS = 1.5
 TOOL_STATUS_UPDATE_INTERVAL_SECONDS = 1.5
-PROGRESS_HEARTBEAT_INTERVAL_SECONDS = 5.0
-
-
-def _is_feishu_adapter(adapter: Any) -> bool:
-    adapter_name = str(
-        getattr(adapter, "name", "")
-        or getattr(adapter, "platform", "")
-        or ""
-    ).strip().lower()
-    return adapter_name == "feishu"
-
-
-def _response_ok(response: Any) -> bool:
-    return bool(response and getattr(response, "success", lambda: False)())
-
-
-def _resolve_reply_to_message_id(consumer: Any) -> str | None:
-    reply_to = get_reply_to_message_id().strip()
-    if reply_to:
-        return reply_to
-    fallback = get_reply_target(consumer.adapter, consumer.chat_id)
-    return fallback or None
-
-
-def _visible_tool_steps(adapter: Any, chat_id: str) -> list[Any]:
-    steps = get_tool_steps(adapter, chat_id)
-    if steps:
-        return steps
-    return fallback_steps_from_lines(get_fallback_tool_lines(adapter, chat_id))
-
-
-def _should_show_tool_use(adapter: Any, chat_id: str) -> bool:
-    """Only render the tool panel after real tool activity exists."""
-    return bool(_visible_tool_steps(adapter, chat_id))
-
-
-def _elapsed_ms(adapter: Any, chat_id: str) -> int | None:
-    seconds = get_elapsed_seconds(adapter, chat_id)
-    if seconds is None:
-        return None
-    return int(seconds * 1000)
-
-
-def _get_card_update_lock(adapter: Any, chat_id: str) -> asyncio.Lock:
-    state = get_chat_state(adapter, chat_id)
-    if state.card_update_lock is None:
-        state.card_update_lock = asyncio.Lock()
-    return state.card_update_lock
-
-
-async def _ensure_progress_heartbeat(adapter: Any, chat_id: str) -> None:
-    task = get_heartbeat_task(adapter, chat_id)
-    if task and not task.done():
-        return
-    new_task = asyncio.create_task(_progress_heartbeat(adapter, chat_id))
-    set_heartbeat_task(adapter, chat_id, new_task)
-
-
-async def _progress_heartbeat(adapter: Any, chat_id: str) -> None:
-    current_task = asyncio.current_task()
-    try:
-        while True:
-            await asyncio.sleep(PROGRESS_HEARTBEAT_INTERVAL_SECONDS)
-            state = get_chat_state(adapter, chat_id)
-            if state.phase in {"completed", "aborted", "terminated"} or not state.card_message_id:
-                return
-            if state.display_text.strip():
-                continue
-            if not (_visible_tool_steps(adapter, chat_id) or get_pending_status_text(adapter, chat_id)):
-                continue
-            await sync_progress_card(adapter, chat_id)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.debug("hermes_feishu_plugin heartbeat skipped: %s", exc)
-    finally:
-        clear_heartbeat_task(adapter, chat_id, current_task)
 
 
 async def _ensure_card_created(
@@ -156,14 +72,14 @@ async def _ensure_card_created(
         if state.card_message_id:
             return state.card_message_id
 
-        steps = _visible_tool_steps(adapter, chat_id)
+        steps = visible_tool_steps(adapter, chat_id)
         tool_elapsed_ms = get_tool_elapsed_ms(adapter, chat_id)
         status_text = get_pending_status_text(adapter, chat_id)
         initial_card = build_streaming_pre_answer_card(
             tool_steps=steps,
             tool_elapsed_ms=tool_elapsed_ms,
             status_text=status_text,
-            show_tool_use=_should_show_tool_use(adapter, chat_id),
+            show_tool_use=should_show_tool_use(adapter, chat_id),
         )
 
         try:
@@ -176,7 +92,7 @@ async def _ensure_card_created(
                 reply_to=reply_to,
                 metadata=metadata,
             )
-            if not _response_ok(response):
+            if not response_ok(response):
                 raise RuntimeError(f"send CardKit reference failed: code={getattr(response, 'code', None)} msg={getattr(response, 'msg', None)}")
             message_id = extract_message_id(response)
             if not message_id:
@@ -185,7 +101,7 @@ async def _ensure_card_created(
             state.phase = "streaming"
             state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
             state.flush_controller.set_ready(True)
-            await _ensure_progress_heartbeat(adapter, chat_id)
+            await ensure_progress_heartbeat(adapter, chat_id, sync_progress_card)
             return message_id
         except Exception as exc:
             logger.warning("hermes_feishu_plugin CardKit flow failed; falling back to IM card: %s", exc)
@@ -197,7 +113,7 @@ async def _ensure_card_created(
         fallback_card = build_streaming_patch_card(
             tool_steps=steps,
             status_text=status_text,
-            show_tool_use=_should_show_tool_use(adapter, chat_id),
+            show_tool_use=should_show_tool_use(adapter, chat_id),
         )
         response = await send_interactive_card(
             adapter,
@@ -206,7 +122,7 @@ async def _ensure_card_created(
             reply_to=reply_to,
             metadata=metadata,
         )
-        if not _response_ok(response):
+        if not response_ok(response):
             logger.warning(
                 "hermes_feishu_plugin fallback IM card send failed: code=%s msg=%s",
                 getattr(response, "code", None),
@@ -219,7 +135,7 @@ async def _ensure_card_created(
             state.phase = "streaming"
             state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
             state.flush_controller.set_ready(True)
-            await _ensure_progress_heartbeat(adapter, chat_id)
+            await ensure_progress_heartbeat(adapter, chat_id, sync_progress_card)
         return message_id
 
 
@@ -237,7 +153,7 @@ async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
     active_card_id = get_card_id(adapter, chat_id)
     if active_card_id:
         try:
-            async with _get_card_update_lock(adapter, chat_id):
+            async with get_card_update_lock(adapter, chat_id):
                 sequence = advance_card_sequence(adapter, chat_id)
                 await stream_card_content(
                     adapter,
@@ -264,13 +180,13 @@ async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
 
     card = build_streaming_patch_card(
         text=text,
-        tool_steps=_visible_tool_steps(adapter, chat_id),
+        tool_steps=visible_tool_steps(adapter, chat_id),
         status_text=get_pending_status_text(adapter, chat_id),
-        show_tool_use=_should_show_tool_use(adapter, chat_id),
+        show_tool_use=should_show_tool_use(adapter, chat_id),
     )
-    async with _get_card_update_lock(adapter, chat_id):
+    async with get_card_update_lock(adapter, chat_id):
         response = await patch_interactive_card(adapter, message_id=message_id, card=card)
-    if _response_ok(response):
+    if response_ok(response):
         remember_last_flushed_text(adapter, chat_id, text)
 
 
@@ -294,8 +210,9 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
     if not message_id:
         return None
 
-    steps = _visible_tool_steps(adapter, chat_id)
+    steps = visible_tool_steps(adapter, chat_id)
     status_text = get_pending_status_text(adapter, chat_id)
+    text = current_progress_text(adapter, chat_id)
     if not steps and not status_text:
         return message_id
 
@@ -305,15 +222,16 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
     state.last_tool_status_update_at = now
 
     card = build_streaming_pre_answer_card(
+        text=text,
         tool_steps=steps,
         tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
         status_text=status_text,
-        show_tool_use=_should_show_tool_use(adapter, chat_id),
+        show_tool_use=should_show_tool_use(adapter, chat_id),
     )
     active_card_id = get_card_id(adapter, chat_id)
     if active_card_id:
         try:
-            async with _get_card_update_lock(adapter, chat_id):
+            async with get_card_update_lock(adapter, chat_id):
                 sequence = advance_card_sequence(adapter, chat_id)
                 await update_card(adapter, card_id=active_card_id, card=card, sequence=sequence)
             return message_id
@@ -325,7 +243,7 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
             return message_id
 
     if not get_original_card_id(adapter, chat_id):
-        async with _get_card_update_lock(adapter, chat_id):
+        async with get_card_update_lock(adapter, chat_id):
             await patch_interactive_card(adapter, message_id=message_id, card=card)
     return message_id
 
@@ -346,15 +264,15 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str) -> bool:
 
     complete_card = build_complete_card(
         text=text,
-        tool_steps=_visible_tool_steps(adapter, chat_id),
+        tool_steps=visible_tool_steps(adapter, chat_id),
         tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
-        elapsed_ms=_elapsed_ms(adapter, chat_id),
-        show_tool_use=_should_show_tool_use(adapter, chat_id),
+        elapsed_ms=elapsed_ms(adapter, chat_id),
+        show_tool_use=should_show_tool_use(adapter, chat_id),
     )
     effective_card_id = get_card_id(adapter, chat_id) or get_original_card_id(adapter, chat_id)
     if effective_card_id:
         try:
-            async with _get_card_update_lock(adapter, chat_id):
+            async with get_card_update_lock(adapter, chat_id):
                 sequence = advance_card_sequence(adapter, chat_id)
                 await set_card_streaming_mode(
                     adapter,
@@ -370,21 +288,13 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str) -> bool:
         except Exception as exc:
             logger.warning("hermes_feishu_plugin final CardKit update failed; trying IM patch fallback: %s", exc)
 
-    async with _get_card_update_lock(adapter, chat_id):
+    async with get_card_update_lock(adapter, chat_id):
         response = await patch_interactive_card(adapter, message_id=message_id, card=complete_card)
-    if _response_ok(response):
+    if response_ok(response):
         remember_display_text(adapter, chat_id, text)
         remember_last_flushed_text(adapter, chat_id, text)
         return True
     return False
-
-
-def _strip_cursor(text: str, cursor: str) -> tuple[str, bool]:
-    if cursor and text.endswith(cursor):
-        return text[: -len(cursor)], False
-    return text, True
-
-
 def patch_streaming_cards() -> bool:
     """Patch Hermes stream consumer so Feishu uses CardKit-first streaming."""
     import gateway.stream_consumer as stream_consumer
@@ -395,7 +305,7 @@ def patch_streaming_cards() -> bool:
     if not getattr(original_on_delta, "__hermes_feishu_plugin_wrapped__", False):
 
         def wrapped_on_delta(self: Any, text: str | None) -> None:
-            if text is None and _is_feishu_adapter(self.adapter):
+            if text is None and is_feishu_adapter(self.adapter):
                 return
             return original_on_delta(self, text)
 
@@ -410,7 +320,7 @@ def patch_streaming_cards() -> bool:
         if not cleaned.strip():
             return
 
-        if not _is_feishu_adapter(self.adapter):
+        if not is_feishu_adapter(self.adapter):
             return await original_send_or_edit(self, text)
         if not should_stream(self.adapter, self.chat_id):
             return await original_send_or_edit(self, text)
@@ -426,12 +336,12 @@ def patch_streaming_cards() -> bool:
         if cleaned == self._last_sent_text:
             return
 
-        visible_text, is_final = _strip_cursor(cleaned, self.cfg.cursor)
+        visible_text, is_final = strip_cursor(cleaned, self.cfg.cursor)
         try:
             message_id = await _ensure_card_created(
                 self.adapter,
                 self.chat_id,
-                reply_to=_resolve_reply_to_message_id(self),
+                reply_to=resolve_reply_to_message_id(self),
                 metadata=self.metadata,
             )
             if not message_id:

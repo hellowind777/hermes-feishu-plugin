@@ -9,7 +9,7 @@ from hermes_feishu_plugin.card.builder import (
     build_streaming_pre_answer_card,
     split_reasoning_text,
 )
-from hermes_feishu_plugin.card.streaming import _should_show_tool_use
+from hermes_feishu_plugin.card.live_state import should_show_tool_use
 from hermes_feishu_plugin.card.models import ToolDisplayStep
 from hermes_feishu_plugin.channel.runtime_state import remember_tool_steps
 
@@ -52,6 +52,18 @@ def test_build_streaming_pre_answer_card_can_render_status_text() -> None:
     assert content_element["content"] == "已切换到第 1 备用 API 渠道：codexzh"
 
 
+def test_build_streaming_pre_answer_card_preserves_streamed_text_during_progress_updates() -> None:
+    """Progress refreshes should keep the already streamed visible text."""
+    card = build_streaming_pre_answer_card(
+        text="这段内容已经吐出来了",
+        status_text="已切换到备用渠道",
+    )
+
+    content_element = next(element for element in card["body"]["elements"] if element.get("element_id") == STREAMING_ELEMENT_ID)
+
+    assert content_element["content"] == "这段内容已经吐出来了"
+
+
 def test_streaming_tool_panels_default_to_collapsed() -> None:
     """Live tool panels should stay collapsed unless the user opens them."""
     steps = [ToolDisplayStep(title="Run command", status="running")]
@@ -92,8 +104,8 @@ def test_show_tool_use_only_after_real_tool_steps() -> None:
 
     adapter = DummyAdapter()
 
-    assert _should_show_tool_use(adapter, "chat-1") is False
+    assert should_show_tool_use(adapter, "chat-1") is False
 
     remember_tool_steps(adapter, "chat-1", ["🔎 find *.py"])
 
-    assert _should_show_tool_use(adapter, "chat-1") is True
+    assert should_show_tool_use(adapter, "chat-1") is True

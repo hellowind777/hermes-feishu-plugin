@@ -46,6 +46,46 @@ def _pop_approval_state(adapter: Any, approval_id: Any, chat_id: str) -> tuple[A
     return None, None
 
 
+def _normalize_message_id(raw_value: Any) -> str:
+    message_id = str(raw_value or "").strip()
+    if not message_id:
+        return ""
+    return message_id.split(":", 1)[0].strip()
+
+
+def _extract_callback_message_id(data: Any, event: Any) -> str:
+    context = getattr(event, "context", None)
+    message = getattr(event, "message", None)
+    candidates = (
+        getattr(context, "open_message_id", None),
+        getattr(context, "message_id", None),
+        getattr(event, "open_message_id", None),
+        getattr(event, "message_id", None),
+        getattr(message, "message_id", None),
+        getattr(getattr(data, "event", None), "message_id", None),
+    )
+    for candidate in candidates:
+        normalized = _normalize_message_id(candidate)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _recover_approval_state(action_value: dict[str, Any], chat_id: str, message_id: str) -> dict[str, str] | None:
+    session_key = str(action_value.get("session_key", "") or "").strip()
+    embedded_chat_id = str(action_value.get("chat_id", "") or "").strip()
+    effective_chat_id = embedded_chat_id or chat_id
+    if not session_key or not effective_chat_id:
+        return None
+    if chat_id and embedded_chat_id and embedded_chat_id != chat_id:
+        return None
+    return {
+        "session_key": session_key,
+        "chat_id": effective_chat_id,
+        "message_id": message_id,
+    }
+
+
 def patch_exec_approval_localization() -> bool:
     """Localize approval cards and tolerate callback payload differences."""
     from gateway.platforms.base import SendResult
@@ -74,7 +114,12 @@ def patch_exec_approval_localization() -> bool:
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": label},
                     "type": btn_type,
-                    "value": {"hermes_action": action_name, "approval_id": approval_id},
+                    "value": {
+                        "hermes_action": action_name,
+                        "approval_id": approval_id,
+                        "session_key": session_key,
+                        "chat_id": chat_id,
+                    },
                 }
 
             card = {
@@ -158,7 +203,12 @@ def patch_exec_approval_localization() -> bool:
 
         context = getattr(event, "context", None)
         chat_id = str(getattr(context, "open_chat_id", "") or getattr(context, "chat_id", "") or "")
+        callback_message_id = _extract_callback_message_id(data, event)
         matched_key, state = _pop_approval_state(self, action_value.get("approval_id"), chat_id)
+        if state and callback_message_id and not state.get("message_id"):
+            state["message_id"] = callback_message_id
+        if not state:
+            state = _recover_approval_state(action_value, chat_id, callback_message_id)
         if not state:
             logger.warning("[Feishu] Approval state not found: raw_id=%r chat_id=%s", action_value.get("approval_id"), chat_id)
             return

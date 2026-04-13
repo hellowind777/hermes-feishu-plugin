@@ -62,6 +62,7 @@ def strip_reasoning_tags(text: str) -> str:
 
 def build_streaming_pre_answer_card(
     *,
+    text: str = "",
     tool_steps: list[ToolDisplayStep] | None = None,
     tool_elapsed_ms: int | None = None,
     status_text: str = "",
@@ -81,7 +82,7 @@ def build_streaming_pre_answer_card(
     elements.append(
         {
             "tag": "markdown",
-            "content": _optimize_markdown_style(status_text),
+            "content": _optimize_markdown_style(text or status_text),
             "text_align": "left",
             "text_size": "normal_v2",
             "margin": "0px 0px 0px 0px",
