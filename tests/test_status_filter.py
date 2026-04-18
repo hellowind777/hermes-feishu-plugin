@@ -16,3 +16,16 @@ def test_localized_model_switch_status_is_not_treated_as_tool_progress() -> None
     assert is_model_switch_status_message(text) is True
     assert should_suppress_status_message(text) is True
     assert parse_tool_progress_lines(text) == []
+
+
+def test_interrupt_status_does_not_leak_into_tool_progress_lines() -> None:
+    """Busy-interrupt status should never be appended into Feishu tool steps."""
+    text = "\n".join(
+        [
+            "[tool] vision_analyze(image)",
+            "⚡ Interrupting current task (iteration 1/90). I'll respond to your message shortly.",
+        ]
+    )
+
+    assert should_suppress_status_message(text.splitlines()[1]) is True
+    assert parse_tool_progress_lines(text) == ["vision_analyze(image)"]

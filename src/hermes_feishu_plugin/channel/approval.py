@@ -91,8 +91,12 @@ def patch_exec_approval_localization() -> bool:
     from gateway.platforms.base import SendResult
     from gateway.platforms.feishu import FeishuAdapter
 
+    patched_any = False
+
     original_send_exec = FeishuAdapter.send_exec_approval
-    if not getattr(original_send_exec, "__hermes_feishu_plugin_wrapped__", False):
+    if getattr(original_send_exec, "__hermes_feishu_plugin_wrapped__", False):
+        patched_any = True
+    else:
 
         async def wrapped_send_exec(
             self: Any,
@@ -159,9 +163,40 @@ def patch_exec_approval_localization() -> bool:
 
         wrapped_send_exec.__hermes_feishu_plugin_wrapped__ = True
         FeishuAdapter.send_exec_approval = wrapped_send_exec
+        patched_any = True
 
-    original_update_card = FeishuAdapter._update_approval_card
-    if not getattr(original_update_card, "__hermes_feishu_plugin_wrapped__", False):
+    original_resolved_card = getattr(FeishuAdapter, "_build_resolved_approval_card", None)
+    if original_resolved_card and getattr(original_resolved_card, "__hermes_feishu_plugin_wrapped__", False):
+        patched_any = True
+    elif original_resolved_card:
+        original_resolved_card_fn = original_resolved_card.__func__ if isinstance(original_resolved_card, staticmethod) else original_resolved_card
+
+        def wrapped_resolved_card(*, choice: str, user_name: str) -> dict[str, Any]:
+            card = original_resolved_card_fn(choice=choice, user_name=user_name)
+            label = {
+                "once": approval_strings()["approved_once"],
+                "session": approval_strings()["approved_session"],
+                "always": approval_strings()["approved_always"],
+                "deny": approval_strings()["denied"],
+            }.get(choice, approval_strings()["resolved"])
+            icon = "❌" if choice == "deny" else "✅"
+            if isinstance(card, dict):
+                header = card.setdefault("header", {})
+                title = header.setdefault("title", {})
+                title["content"] = f"{icon} {label}"
+                elements = card.get("elements")
+                if isinstance(elements, list) and elements:
+                    elements[0]["content"] = f"{icon} **{label}** · {approval_strings()['by_user']}：{user_name}"
+            return card
+
+        wrapped_resolved_card.__hermes_feishu_plugin_wrapped__ = True
+        FeishuAdapter._build_resolved_approval_card = staticmethod(wrapped_resolved_card)
+        patched_any = True
+
+    original_update_card = getattr(FeishuAdapter, "_update_approval_card", None)
+    if original_update_card and getattr(original_update_card, "__hermes_feishu_plugin_wrapped__", False):
+        patched_any = True
+    elif original_update_card:
 
         async def wrapped_update_card(self: Any, message_id: str, label: str, user_name: str, choice: str) -> None:
             if not self._client or not message_id:
@@ -184,6 +219,10 @@ def patch_exec_approval_localization() -> bool:
 
         wrapped_update_card.__hermes_feishu_plugin_wrapped__ = True
         FeishuAdapter._update_approval_card = wrapped_update_card
+        patched_any = True
+
+    if not hasattr(FeishuAdapter, "_update_approval_card"):
+        return patched_any
 
     original_handle_action = FeishuAdapter._handle_card_action_event
     if getattr(original_handle_action, "__hermes_feishu_plugin_wrapped__", False):

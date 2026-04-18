@@ -46,6 +46,29 @@ async def test_model_switch_status_updates_pending_status_text(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_interrupt_status_is_suppressed_without_card_update(monkeypatch) -> None:
+    """Busy interrupt acknowledgements should not be sent as standalone replies."""
+    adapter = DummyAdapter()
+
+    monkeypatch.setattr(status_patches, "should_stream", lambda _adapter, _chat_id: True)
+
+    async def fail_sync_progress_card(*_args, **_kwargs):
+        raise AssertionError("interrupt status should not update a card")
+
+    monkeypatch.setattr(status_patches, "sync_progress_card", fail_sync_progress_card)
+
+    result = await status_patches.maybe_handle_status_message(
+        adapter,
+        chat_id="chat-1",
+        content="⚡ Interrupting current task (iteration 1/90). I'll respond to your message shortly.",
+        message_id="om_old",
+    )
+
+    assert get_pending_status_text(adapter, "chat-1") == ""
+    assert getattr(result, "message_id", "") == "om_old"
+
+
+@pytest.mark.asyncio
 async def test_non_stream_final_reply_is_folded_back_into_existing_card(monkeypatch) -> None:
     """When streaming produced a live card, final plain text should close that card."""
     adapter = DummyAdapter()

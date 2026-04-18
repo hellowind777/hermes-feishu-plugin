@@ -12,6 +12,16 @@ LEGACY_PLUGIN_DIR_NAMES = ("runtime_patches",)
 STARTUP_PTH_NAME = "hermes_feishu_plugin_startup.pth"
 SITECUSTOMIZE_NAME = "sitecustomize.py"
 STARTUP_IMPORT_LINE = "import hermes_feishu_plugin.startup\n"
+INSTALL_IGNORE_PATTERNS = (
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    ".pytest_tmp",
+    "dist",
+    "build",
+    "*.egg-info",
+    "docs",
+)
 
 
 def _resolve_plugin_root() -> Path:
@@ -35,8 +45,20 @@ def _remove_legacy_links(plugins_dir: Path, plugin_dir: Path, plugin_name: str) 
         if legacy_name == plugin_name:
             continue
         legacy_path = plugins_dir / legacy_name
-        if legacy_path.is_symlink() and legacy_path.resolve() == plugin_dir:
-            legacy_path.unlink()
+        if not legacy_path.exists():
+            continue
+        if legacy_path.is_symlink():
+            try:
+                if legacy_path.resolve() == plugin_dir:
+                    legacy_path.unlink()
+                    continue
+            except OSError:
+                legacy_path.unlink()
+                continue
+        if legacy_path.is_dir():
+            shutil.rmtree(legacy_path)
+            continue
+        legacy_path.unlink()
 
 
 def _remove_legacy_plugin_dirs(plugins_dir: Path) -> None:
@@ -86,6 +108,25 @@ def _write_startup_loader(plugins_root: Path) -> list[str]:
     return synced
 
 
+def _copy_plugin_dir(source: Path, destination: Path) -> None:
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(*INSTALL_IGNORE_PATTERNS),
+    )
+
+
+def _create_plugin_link(plugins_dir: Path, plugin_dir: Path, plugin_name: str) -> Path:
+    link_path = plugins_dir / plugin_name
+    try:
+        link_path.symlink_to(plugin_dir, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+        _copy_plugin_dir(plugin_dir, link_path)
+    return link_path
+
+
 def sync_profile_plugin_links(*, plugin_name: str = PLUGIN_LINK_NAME) -> list[str]:
     """Ensure the plugin is linked into root and profile plugin directories."""
     plugin_dir = _resolve_plugin_root()
@@ -105,9 +146,12 @@ def sync_profile_plugin_links(*, plugin_name: str = PLUGIN_LINK_NAME) -> list[st
             link_path.unlink()
 
         if link_path.exists():
-            continue
+            if link_path.is_dir():
+                shutil.rmtree(link_path)
+            else:
+                link_path.unlink()
 
-        link_path.symlink_to(plugin_dir, target_is_directory=True)
+        _create_plugin_link(plugins_dir, plugin_dir, plugin_name)
         synced.append(scope)
 
     _write_startup_loader(root / "plugins")

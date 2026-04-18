@@ -8,10 +8,19 @@ import tomllib
 import hermes_feishu_plugin.install as install_module
 
 
+def _seed_directory_link(path: Path, target: Path) -> None:
+    try:
+        path.symlink_to(target, target_is_directory=True)
+    except OSError:
+        path.mkdir()
+
+
 def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, monkeypatch) -> None:
     """Directory-plugin installs should link root and profile plugin folders."""
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
+    (repo_root / "plugin.yaml").write_text("name: hermes_feishu_plugin\n", encoding="utf-8")
+    (repo_root / "__init__.py").write_text("", encoding="utf-8")
 
     home_root = tmp_path / "home"
     hermes_root = home_root / ".hermes"
@@ -23,7 +32,7 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
     hermes_site_packages.mkdir(parents=True)
 
     legacy_link = root_plugins / "hermes-feishu-plugin"
-    legacy_link.symlink_to(repo_root, target_is_directory=True)
+    _seed_directory_link(legacy_link, repo_root)
     legacy_runtime_plugin = default_plugins / "runtime_patches"
     legacy_runtime_plugin.mkdir()
     (legacy_runtime_plugin / "plugin.yaml").write_text("name: runtime_patches\n", encoding="utf-8")
@@ -38,10 +47,16 @@ def test_sync_profile_plugin_links_creates_root_and_profile_symlinks(tmp_path, m
     assert set(synced_scopes) == {"root", "default"}
     root_link = root_plugins / "hermes_feishu_plugin"
     default_link = default_plugins / "hermes_feishu_plugin"
-    assert root_link.is_symlink()
-    assert default_link.is_symlink()
-    assert root_link.resolve() == repo_root
-    assert default_link.resolve() == repo_root
+    assert root_link.exists()
+    assert default_link.exists()
+    if root_link.is_symlink():
+        assert root_link.resolve() == repo_root
+    else:
+        assert (root_link / "plugin.yaml").read_text(encoding="utf-8") == "name: hermes_feishu_plugin\n"
+    if default_link.is_symlink():
+        assert default_link.resolve() == repo_root
+    else:
+        assert (default_link / "plugin.yaml").read_text(encoding="utf-8") == "name: hermes_feishu_plugin\n"
     assert not legacy_link.exists()
     assert not legacy_runtime_plugin.exists()
     assert (root_plugins / "sitecustomize.py").read_text(encoding="utf-8") == "import hermes_feishu_plugin.startup\n"

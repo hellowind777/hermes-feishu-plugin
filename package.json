@@ -1,0 +1,34 @@
+{
+  "name": "hermes-feishu-plugin",
+  "version": "0.6.0",
+  "description": "Hermes Feishu plugin aligned with the official OpenClaw Lark/Feishu interaction model.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hellowind777/hermes-feishu-plugin.git"
+  },
+  "homepage": "https://github.com/hellowind777/hermes-feishu-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/hellowind777/hermes-feishu-plugin/issues"
+  },
+  "keywords": [
+    "hermes",
+    "feishu",
+    "lark",
+    "plugin",
+    "python",
+    "openclaw"
+  ],
+  "files": [
+    "README.md",
+    "LICENSE",
+    "plugin.yaml",
+    "__init__.py",
+    "install.py",
+    "pyproject.toml",
+    "src/hermes_feishu_plugin/**/*.py"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

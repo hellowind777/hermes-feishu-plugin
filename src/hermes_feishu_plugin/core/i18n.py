@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import locale
 import os
+import re
 import shutil
 import subprocess
 from functools import lru_cache
@@ -11,6 +12,24 @@ from pathlib import Path
 from typing import Any
 
 _SUPPORTED_LOCALES = {"zh_cn", "en_us"}
+_DYNAMIC_SYSTEM_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"(?P<prefix>💾\s*)?Skill '([^']+)' created\.", re.I),
+        r"\g<prefix>已创建技能「\2」。",
+    ),
+    (
+        re.compile(r"(?P<prefix>💾\s*)?Skill '([^']+)' updated\.", re.I),
+        r"\g<prefix>已更新技能「\2」。",
+    ),
+    (
+        re.compile(r"(?P<prefix>💾\s*)?Cron job '([^']+)' created\.", re.I),
+        r"\g<prefix>已创建定时任务「\2」。",
+    ),
+    (
+        re.compile(r"(?P<prefix>💾\s*)?Cron job '([^']+)' updated\.", re.I),
+        r"\g<prefix>已更新定时任务「\2」。",
+    ),
+)
 
 
 @lru_cache(maxsize=1)
@@ -147,6 +166,9 @@ def localize_system_text(text: str) -> str:
 
     replacements = {
         "Cronjob Response:": "定时任务响应：",
+        "Gateway shutting down — Your current task will be interrupted.": "网关正在关闭——当前任务将被中断。",
+        "Interrupting current task": "正在中断当前任务",
+        "I'll respond to your message shortly.": "我会随后回复你的新消息。",
         "Note: The agent cannot see this message, and therefore cannot respond to it.": "注意：当前代理看不到这条消息，因此无法直接回应。",
         "Rate limited — switching to fallback provider...": "主 API 渠道触发限速，正在切换备用 API 渠道...",
         "Primary model failed — switching to fallback:": "主模型失败，正在切换备用 API 渠道：",
@@ -169,4 +191,11 @@ def localize_system_text(text: str) -> str:
     localized = content
     for source, target in replacements.items():
         localized = localized.replace(source, target)
+    for pattern, replacement in _DYNAMIC_SYSTEM_PATTERNS:
+        localized = pattern.sub(replacement, localized)
+    localized = re.sub(
+        r'To stop or manage this job, send me a new message \(e\.g\. "stop reminder ([^"]+)"\)\.',
+        r'如需停止或管理此任务，请给我发一条新消息（例如“stop reminder \1”）。',
+        localized,
+    )
     return localized

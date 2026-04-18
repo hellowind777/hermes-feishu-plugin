@@ -11,6 +11,7 @@ from ..channel.runtime_state import (
     disable_cardkit_streaming,
     get_card_id,
     get_chat_state,
+    get_generation,
     get_original_card_id,
     get_pending_status_text,
     get_tool_elapsed_ms,
@@ -20,8 +21,9 @@ from ..channel.runtime_state import (
     remember_last_flushed_text,
     remember_tool_steps,
 )
-from ..channel.state import get_reply_to_message_id
+from ..channel.state import get_chat_generation, get_reply_to_message_id
 from ..channel.status_filter import parse_tool_progress_lines, should_suppress_status_message
+from ..core.i18n import select_text
 from ..core.mode import should_stream
 from .builder import (
     STREAMING_ELEMENT_ID,
@@ -52,14 +54,38 @@ PATCH_UPDATE_INTERVAL_SECONDS = 1.5
 TOOL_STATUS_UPDATE_INTERVAL_SECONDS = 1.5
 
 
+def _resolve_expected_generation(adapter: Any, chat_id: str, owner: Any | None = None) -> int:
+    if owner is not None:
+        cached = int(getattr(owner, "_hermes_feishu_generation", 0) or 0)
+        if cached > 0:
+            return cached
+    expected = int(get_chat_generation() or 0)
+    if expected <= 0:
+        expected = int(get_generation(adapter, chat_id) or 0)
+    if owner is not None:
+        setattr(owner, "_hermes_feishu_generation", expected)
+    return expected
+
+
+def _generation_matches(adapter: Any, chat_id: str, expected_generation: int) -> bool:
+    if expected_generation <= 0:
+        return True
+    return expected_generation == get_generation(adapter, chat_id)
+
+
 async def _ensure_card_created(
     adapter: Any,
     chat_id: str,
     *,
     reply_to: str | None,
     metadata: Any = None,
+    expected_generation: int = 0,
 ) -> str | None:
     """Create the single reply card via CardKit, falling back to IM card."""
+    if expected_generation <= 0:
+        expected_generation = _resolve_expected_generation(adapter, chat_id)
+    if not _generation_matches(adapter, chat_id, expected_generation):
+        return None
     state = get_chat_state(adapter, chat_id)
     if state.card_message_id:
         return state.card_message_id
@@ -100,9 +126,19 @@ async def _ensure_card_created(
                 raise RuntimeError("send CardKit reference succeeded but no message_id was returned")
             remember_card_message(adapter, chat_id, message_id)
             state.phase = "streaming"
-            state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
+            state.flush_controller = FlushController(
+                lambda: _perform_answer_flush(adapter, chat_id, expected_generation=expected_generation)
+            )
             state.flush_controller.set_ready(True)
-            await ensure_progress_heartbeat(adapter, chat_id, sync_progress_card)
+            await ensure_progress_heartbeat(
+                adapter,
+                chat_id,
+                lambda inner_adapter, inner_chat_id: sync_progress_card(
+                    inner_adapter,
+                    inner_chat_id,
+                    expected_generation=expected_generation,
+                ),
+            )
             return message_id
         except Exception as exc:
             logger.warning("hermes_feishu_plugin CardKit flow failed; falling back to IM card: %s", exc)
@@ -134,14 +170,26 @@ async def _ensure_card_created(
         if message_id:
             remember_card_message(adapter, chat_id, message_id)
             state.phase = "streaming"
-            state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
+            state.flush_controller = FlushController(
+                lambda: _perform_answer_flush(adapter, chat_id, expected_generation=expected_generation)
+            )
             state.flush_controller.set_ready(True)
-            await ensure_progress_heartbeat(adapter, chat_id, sync_progress_card)
+            await ensure_progress_heartbeat(
+                adapter,
+                chat_id,
+                lambda inner_adapter, inner_chat_id: sync_progress_card(
+                    inner_adapter,
+                    inner_chat_id,
+                    expected_generation=expected_generation,
+                ),
+            )
         return message_id
 
 
-async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
+async def _perform_answer_flush(adapter: Any, chat_id: str, *, expected_generation: int = 0) -> None:
     """Flush accumulated answer text via CardKit or IM patch fallback."""
+    if not _generation_matches(adapter, chat_id, expected_generation):
+        return
     state = get_chat_state(adapter, chat_id)
     message_id = state.card_message_id
     if not message_id or state.phase in {"completed", "aborted", "terminated"}:
@@ -192,23 +240,43 @@ async def _perform_answer_flush(adapter: Any, chat_id: str) -> None:
         remember_last_flushed_text(adapter, chat_id, text)
 
 
-async def _flush_answer(adapter: Any, chat_id: str) -> None:
+async def _flush_answer(adapter: Any, chat_id: str, *, expected_generation: int = 0) -> None:
+    if not _generation_matches(adapter, chat_id, expected_generation):
+        return
     state = get_chat_state(adapter, chat_id)
     if not state.flush_controller:
-        state.flush_controller = FlushController(lambda: _perform_answer_flush(adapter, chat_id))
+        state.flush_controller = FlushController(
+            lambda: _perform_answer_flush(adapter, chat_id, expected_generation=expected_generation)
+        )
         state.flush_controller.set_ready(bool(state.card_message_id))
     throttle = CARDKIT_UPDATE_INTERVAL_SECONDS if get_card_id(adapter, chat_id) else PATCH_UPDATE_INTERVAL_SECONDS
     await state.flush_controller.throttled_update(throttle)
 
 
-async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -> str | None:
+async def sync_progress_card(
+    adapter: Any,
+    chat_id: str,
+    metadata: Any = None,
+    *,
+    expected_generation: int = 0,
+) -> str | None:
     """Create or update the single Feishu reply card for tool-progress updates."""
     if not should_stream(adapter, chat_id):
+        return None
+    if expected_generation <= 0:
+        expected_generation = _resolve_expected_generation(adapter, chat_id)
+    if not _generation_matches(adapter, chat_id, expected_generation):
         return None
 
     state = get_chat_state(adapter, chat_id)
     reply_to = state.reply_to_message_id or get_reply_to_message_id().strip()
-    message_id = await _ensure_card_created(adapter, chat_id, reply_to=reply_to, metadata=metadata)
+    message_id = await _ensure_card_created(
+        adapter,
+        chat_id,
+        reply_to=reply_to,
+        metadata=metadata,
+        expected_generation=expected_generation,
+    )
     if not message_id:
         return None
 
@@ -252,7 +320,11 @@ async def sync_progress_card(adapter: Any, chat_id: str, metadata: Any = None) -
     return message_id
 
 
-async def _finalize_card(adapter: Any, chat_id: str, text: str) -> bool:
+async def _finalize_card(adapter: Any, chat_id: str, text: str, *, expected_generation: int = 0) -> bool:
+    if expected_generation <= 0:
+        expected_generation = _resolve_expected_generation(adapter, chat_id)
+    if not _generation_matches(adapter, chat_id, expected_generation):
+        return False
     state = get_chat_state(adapter, chat_id)
     if state.phase == "completed":
         return True
@@ -299,6 +371,59 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str) -> bool:
         remember_last_flushed_text(adapter, chat_id, text)
         return True
     return False
+
+
+async def abort_progress_card(adapter: Any, chat_id: str, reason: str | None = None) -> bool:
+    """Close an active progress card when a newer inbound turn supersedes it."""
+    state = get_chat_state(adapter, chat_id)
+    if not state.card_message_id or state.phase in {"completed", "aborted", "terminated"}:
+        return False
+
+    state.phase = "aborted"
+    if state.flush_controller:
+        state.flush_controller.complete()
+        await state.flush_controller.wait_for_flush()
+
+    text = str(reason or "").strip() or select_text(
+        "已收到新消息，上一轮处理已停止，正在处理最新输入。",
+        "New message received. The previous turn was stopped, and the latest input is being handled.",
+    )
+    aborted_card = build_complete_card(
+        text=text,
+        tool_steps=visible_tool_steps(adapter, chat_id),
+        tool_elapsed_ms=get_tool_elapsed_ms(adapter, chat_id),
+        elapsed_ms=elapsed_ms(adapter, chat_id),
+        is_aborted=True,
+        show_tool_use=should_show_tool_use(adapter, chat_id),
+    )
+    effective_card_id = get_card_id(adapter, chat_id) or get_original_card_id(adapter, chat_id)
+    if effective_card_id:
+        try:
+            async with get_card_update_lock(adapter, chat_id):
+                sequence = advance_card_sequence(adapter, chat_id)
+                await set_card_streaming_mode(
+                    adapter,
+                    card_id=effective_card_id,
+                    streaming_mode=False,
+                    sequence=sequence,
+                )
+                sequence = advance_card_sequence(adapter, chat_id)
+                await update_card(adapter, card_id=effective_card_id, card=to_cardkit2(aborted_card), sequence=sequence)
+            remember_display_text(adapter, chat_id, text)
+            remember_last_flushed_text(adapter, chat_id, text)
+            return True
+        except Exception as exc:
+            logger.warning("hermes_feishu_plugin abort CardKit update failed; trying IM patch fallback: %s", exc)
+
+    async with get_card_update_lock(adapter, chat_id):
+        response = await patch_interactive_card(adapter, message_id=state.card_message_id, card=aborted_card)
+    if response_ok(response):
+        remember_display_text(adapter, chat_id, text)
+        remember_last_flushed_text(adapter, chat_id, text)
+        return True
+    return False
+
+
 def patch_streaming_cards() -> bool:
     """Patch Hermes stream consumer so Feishu uses CardKit-first streaming."""
     import gateway.stream_consumer as stream_consumer
@@ -329,11 +454,21 @@ def patch_streaming_cards() -> bool:
         if not should_stream(self.adapter, self.chat_id):
             return await original_send_or_edit(self, text)
 
+        expected_generation = _resolve_expected_generation(self.adapter, self.chat_id, owner=self)
+        if not _generation_matches(self.adapter, self.chat_id, expected_generation):
+            self._already_sent = True
+            return
+
         if should_suppress_status_message(cleaned):
             lines = parse_tool_progress_lines(cleaned)
             if lines:
                 remember_tool_steps(self.adapter, self.chat_id, lines)
-                await sync_progress_card(self.adapter, self.chat_id, metadata=self.metadata)
+                await sync_progress_card(
+                    self.adapter,
+                    self.chat_id,
+                    metadata=self.metadata,
+                    expected_generation=expected_generation,
+                )
             self._already_sent = True
             return
 
@@ -347,6 +482,7 @@ def patch_streaming_cards() -> bool:
                 self.chat_id,
                 reply_to=resolve_reply_to_message_id(self),
                 metadata=self.metadata,
+                expected_generation=expected_generation,
             )
             if not message_id:
                 return await original_send_or_edit(self, text)
@@ -354,10 +490,19 @@ def patch_streaming_cards() -> bool:
             self._message_id = message_id
             remember_display_text(self.adapter, self.chat_id, visible_text)
             if is_final:
-                if not await _finalize_card(self.adapter, self.chat_id, visible_text):
+                if not await _finalize_card(
+                    self.adapter,
+                    self.chat_id,
+                    visible_text,
+                    expected_generation=expected_generation,
+                ):
                     return await original_send_or_edit(self, text)
             else:
-                await _flush_answer(self.adapter, self.chat_id)
+                await _flush_answer(
+                    self.adapter,
+                    self.chat_id,
+                    expected_generation=expected_generation,
+                )
 
             self._already_sent = True
             self._last_sent_text = cleaned

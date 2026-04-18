@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from .channel.patches import apply_runtime_patches
+from .core.sibling_bootstrap import sync_optional_plugins
 from .install import sync_profile_plugin_links
 from .tools.hooks import on_post_tool_call, on_pre_tool_call
 
@@ -38,3 +39,10 @@ def register(ctx) -> None:
             logger.info("hermes_feishu_plugin synced to profiles: %s", ", ".join(synced))
     except Exception as exc:
         logger.debug("hermes_feishu_plugin profile sync skipped: %s", exc)
+
+    try:
+        synced_optional = sync_optional_plugins()
+        if synced_optional:
+            logger.info("hermes_feishu_plugin bootstrapped sibling plugins: %s", ", ".join(synced_optional))
+    except Exception as exc:
+        logger.debug("hermes_feishu_plugin sibling bootstrap skipped: %s", exc)

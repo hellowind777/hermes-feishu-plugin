@@ -8,6 +8,7 @@ from typing import Any
 
 from ..card.streaming import patch_streaming_cards
 from .approval import patch_exec_approval_localization
+from .burst_merge import patch_feishu_burst_merge
 from .status_patches import patch_suppress_status_messages
 from .typing import patch_disable_ack_reaction, patch_typing_reaction
 from .ws_callbacks import patch_feishu_websocket_card_callbacks
@@ -27,6 +28,7 @@ def apply_runtime_patches(*, plugin_name: str = "hermes_feishu_plugin") -> dict[
     _PATCH_STATUS["plugin_name"] = plugin_name
     patch_plan = (
         ("feishu_ws_card_callbacks", patch_feishu_websocket_card_callbacks, "Handle card.action.trigger WS frames instead of dropping them"),
+        ("feishu_burst_merge", patch_feishu_burst_merge, "Merge near-simultaneous Feishu text/media bursts into one Hermes turn"),
         ("feishu_typing_reaction", patch_typing_reaction, "Use official-style transient Typing reaction"),
         ("feishu_disable_ack_reaction", patch_disable_ack_reaction, "Disable persistent OK acknowledgement reaction"),
         ("feishu_suppress_status_messages", patch_suppress_status_messages, "Suppress progress/status noise and route progress into the live card"),

@@ -5,11 +5,17 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ..card.streaming import sync_progress_card
+from ..card.streaming import abort_progress_card, sync_progress_card
 from .common import clear_ack_reactions_later, ensure_runtime_state
 from .reactions import add_typing_reaction, clear_ack_reactions, remove_typing_reaction
 from .runtime_state import remember_inbound_message, remember_reply_target
-from .state import get_reply_to_message_id, reset_reply_to_message_id, set_reply_to_message_id
+from .state import (
+    get_reply_to_message_id,
+    reset_chat_generation,
+    reset_reply_to_message_id,
+    set_chat_generation,
+    set_reply_to_message_id,
+)
 
 
 def patch_disable_ack_reaction() -> bool:
@@ -91,17 +97,22 @@ def patch_typing_reaction() -> bool:
         chat_type = getattr(source, "chat_type", "dm") if source else "dm"
         reply_targets, _typing_reactions = ensure_runtime_state(self)
         reply_token = set_reply_to_message_id(message_id)
+        generation_token = None
 
         async with chat_lock:
             try:
                 if message_id:
                     reply_targets[chat_id] = message_id
                     remember_reply_target(self, chat_id, message_id)
-                    remember_inbound_message(self, chat_id, message_id, chat_type)
+                    await abort_progress_card(self, chat_id)
+                    state = remember_inbound_message(self, chat_id, message_id, chat_type)
+                    generation_token = set_chat_generation(state.generation)
                     await clear_ack_reactions(self, message_id)
                     asyncio.create_task(clear_ack_reactions_later(self, message_id, 1.0))
                 await self.handle_message(event)
             finally:
+                if generation_token is not None:
+                    reset_chat_generation(generation_token)
                 reset_reply_to_message_id(reply_token)
                 if message_id:
                     await clear_ack_reactions(self, message_id)
