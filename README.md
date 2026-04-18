@@ -136,13 +136,13 @@ python3 install.py
 在 Hermes 运行环境中执行：
 
 ```bash
-pip install -e .
+python -m pip install -e .
 ```
 
 或发布后通过版本安装：
 
 ```bash
-pip install hermes-feishu-plugin
+python -m pip install hermes-feishu-plugin
 ```
 
 该方式适合：
@@ -152,6 +152,19 @@ pip install hermes-feishu-plugin
 - `hermes_agent.plugins` entry point 分发
 
 ### 方式三：通过 npm 获取公开发布包
+
+安装 npm 包：
+
+```bash
+npm install hermes-feishu-plugin
+```
+
+如果你使用 `pnpm` 或 `yarn`，等价命令分别是：
+
+```bash
+pnpm add hermes-feishu-plugin
+yarn add hermes-feishu-plugin
+```
 
 本仓库会提供 npm 包发布链路，便于：
 
@@ -164,6 +177,18 @@ pip install hermes-feishu-plugin
 - **Hermes 运行时安装仍以目录插件或 Python 包为主**
 - npm 包更适合作为 **公开分发与版本追踪入口**
 - 不建议把 npm 安装当作 Hermes 运行时的唯一安装方式
+
+如果你确实是先通过 npm 拉取源码，再交给 Hermes 运行环境使用，可以继续执行：
+
+```bash
+python -m pip install ./node_modules/hermes-feishu-plugin
+```
+
+或在仓库 / 解包目录内执行：
+
+```bash
+python install.py
+```
 
 ## 运行配置
 
@@ -225,13 +250,13 @@ pip install hermes-feishu-plugin
 ### 安装测试依赖
 
 ```bash
-pip install -e .[test]
+python -m pip install -e .[test]
 ```
 
 ### 运行测试
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ### 建议的本地检查
