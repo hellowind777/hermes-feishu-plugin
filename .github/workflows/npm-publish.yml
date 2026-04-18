@@ -1,10 +1,12 @@
 name: Publish NPM
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to publish manually
+        required: true
+        default: main
 
 permissions:
   contents: read
@@ -16,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
