@@ -333,7 +333,6 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str, *, expected_gene
     if not message_id:
         return False
 
-    state.phase = "completed"
     if state.flush_controller:
         state.flush_controller.complete()
         await state.flush_controller.wait_for_flush()
@@ -358,6 +357,7 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str, *, expected_gene
                 )
                 sequence = advance_card_sequence(adapter, chat_id)
                 await update_card(adapter, card_id=effective_card_id, card=to_cardkit2(complete_card), sequence=sequence)
+            state.phase = "completed"
             remember_display_text(adapter, chat_id, text)
             remember_last_flushed_text(adapter, chat_id, text)
             return True
@@ -367,9 +367,11 @@ async def _finalize_card(adapter: Any, chat_id: str, text: str, *, expected_gene
     async with get_card_update_lock(adapter, chat_id):
         response = await patch_interactive_card(adapter, message_id=message_id, card=complete_card)
     if response_ok(response):
+        state.phase = "completed"
         remember_display_text(adapter, chat_id, text)
         remember_last_flushed_text(adapter, chat_id, text)
         return True
+    logger.warning("hermes_feishu_plugin final IM patch fallback failed: message_id=%s", message_id)
     return False
 
 
@@ -379,7 +381,6 @@ async def abort_progress_card(adapter: Any, chat_id: str, reason: str | None = N
     if not state.card_message_id or state.phase in {"completed", "aborted", "terminated"}:
         return False
 
-    state.phase = "aborted"
     if state.flush_controller:
         state.flush_controller.complete()
         await state.flush_controller.wait_for_flush()
@@ -409,6 +410,7 @@ async def abort_progress_card(adapter: Any, chat_id: str, reason: str | None = N
                 )
                 sequence = advance_card_sequence(adapter, chat_id)
                 await update_card(adapter, card_id=effective_card_id, card=to_cardkit2(aborted_card), sequence=sequence)
+            state.phase = "aborted"
             remember_display_text(adapter, chat_id, text)
             remember_last_flushed_text(adapter, chat_id, text)
             return True
@@ -418,9 +420,11 @@ async def abort_progress_card(adapter: Any, chat_id: str, reason: str | None = N
     async with get_card_update_lock(adapter, chat_id):
         response = await patch_interactive_card(adapter, message_id=state.card_message_id, card=aborted_card)
     if response_ok(response):
+        state.phase = "aborted"
         remember_display_text(adapter, chat_id, text)
         remember_last_flushed_text(adapter, chat_id, text)
         return True
+    logger.warning("hermes_feishu_plugin abort IM patch fallback failed: message_id=%s", state.card_message_id)
     return False
 
 
@@ -444,20 +448,20 @@ def patch_streaming_cards() -> bool:
     if getattr(original_send_or_edit, "__hermes_feishu_plugin_wrapped__", False):
         return True
 
-    async def wrapped_send_or_edit(self: Any, text: str) -> None:
+    async def wrapped_send_or_edit(self: Any, text: str, *, finalize: bool = False) -> bool:
         cleaned = self._clean_for_display(text)
         if not cleaned.strip():
-            return
+            return True
 
         if not is_feishu_adapter(self.adapter):
-            return await original_send_or_edit(self, text)
+            return await original_send_or_edit(self, text, finalize=finalize)
         if not should_stream(self.adapter, self.chat_id):
-            return await original_send_or_edit(self, text)
+            return await original_send_or_edit(self, text, finalize=finalize)
 
         expected_generation = _resolve_expected_generation(self.adapter, self.chat_id, owner=self)
         if not _generation_matches(self.adapter, self.chat_id, expected_generation):
             self._already_sent = True
-            return
+            return False
 
         if should_suppress_status_message(cleaned):
             lines = parse_tool_progress_lines(cleaned)
@@ -470,12 +474,13 @@ def patch_streaming_cards() -> bool:
                     expected_generation=expected_generation,
                 )
             self._already_sent = True
-            return
+            return bool(lines)
 
-        if cleaned == self._last_sent_text:
-            return
+        if cleaned == self._last_sent_text and not finalize:
+            return True
 
-        visible_text, is_final = strip_cursor(cleaned, self.cfg.cursor)
+        visible_text, inferred_is_final = strip_cursor(cleaned, self.cfg.cursor)
+        is_final = bool(finalize or inferred_is_final)
         try:
             message_id = await _ensure_card_created(
                 self.adapter,
@@ -485,7 +490,7 @@ def patch_streaming_cards() -> bool:
                 expected_generation=expected_generation,
             )
             if not message_id:
-                return await original_send_or_edit(self, text)
+                return await original_send_or_edit(self, text, finalize=finalize)
 
             self._message_id = message_id
             remember_display_text(self.adapter, self.chat_id, visible_text)
@@ -496,7 +501,7 @@ def patch_streaming_cards() -> bool:
                     visible_text,
                     expected_generation=expected_generation,
                 ):
-                    return await original_send_or_edit(self, text)
+                    return await original_send_or_edit(self, text, finalize=finalize)
             else:
                 await _flush_answer(
                     self.adapter,
@@ -506,12 +511,13 @@ def patch_streaming_cards() -> bool:
 
             self._already_sent = True
             self._last_sent_text = cleaned
+            return True
         except Exception as exc:
             logger.warning("hermes_feishu_plugin CardKit streaming error: %s", exc)
             if not self._message_id:
-                await original_send_or_edit(self, text)
-            else:
-                self._already_sent = True
+                return await original_send_or_edit(self, text, finalize=finalize)
+            self._already_sent = True
+            return False
 
     wrapped_send_or_edit.__hermes_feishu_plugin_wrapped__ = True
     stream_consumer.GatewayStreamConsumer._send_or_edit = wrapped_send_or_edit
